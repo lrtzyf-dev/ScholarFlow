@@ -123,12 +123,12 @@ desktop/                launcher.py（pywebview）、scholarflow.spec、图标
 
 ## 竞赛提交材料
 
+本版本按竞赛要求整理了 Windows 桌面端提交材料：
+
 - 技术文档：[submission/研序ScholarFlow-技术文档.pdf](submission/研序ScholarFlow-技术文档.pdf)（PDF，不超过 30 页）及其源稿 [submission/技术文档.md](submission/技术文档.md)。
 - 演示视频脚本：[submission/演示视频脚本.md](submission/演示视频脚本.md)，按 5–8 分钟普通话、1080p MP4 编排。
 - 材料清单：[submission/材料清单.md](submission/材料清单.md)；托管和在线演示待补字段见 [submission/在线演示说明.md](submission/在线演示说明.md)。
 - 环境模板：根目录 `.env.example` 与 `backend/.env.example`；依赖入口为 `requirements.txt`、`backend/requirements.txt` 和 `frontend/package.json`。
-
-当前目录是待上传的本地源码工作区，尚未绑定 GitHub/Gitee 远程地址，也没有公网演示 URL。完成本地 Git 提交后，需要创建 Public 仓库（或授权评审访问）再推送；在线演示地址和评审账号需要部署后补入材料，不能使用本机地址代替。真实 API Key 只通过环境变量或应用设置配置，不进入源码、文档或公开仓库。
 
 ### 团队信息
 
