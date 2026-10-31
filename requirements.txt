@@ -1,0 +1,2 @@
+# 根目录安装入口；桌面端/后端依赖的完整清单见 backend/requirements.txt
+-r backend/requirements.txt

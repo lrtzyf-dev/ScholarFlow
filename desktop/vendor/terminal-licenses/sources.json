@@ -1,0 +1,17 @@
+[
+  {
+    "file": "microsoft-terminal-MIT.txt",
+    "source": "https://raw.githubusercontent.com/microsoft/terminal/main/LICENSE",
+    "sha256": "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b"
+  },
+  {
+    "file": "winpty-MIT.txt",
+    "source": "https://raw.githubusercontent.com/rprichard/winpty/master/LICENSE",
+    "sha256": "c39e428064b4f3e4fe81a975bf0fd3b845922b431bc4d9a7ffc8bfb091981836"
+  },
+  {
+    "file": "winpty-rs-MIT.txt",
+    "source": "https://raw.githubusercontent.com/andfoy/winpty-rs/main/LICENSE-MIT",
+    "sha256": "615be7c8ce5d0ca271db6c3fb2231e2b98f4c4ad21d9f70a05213fbde607e532"
+  }
+]

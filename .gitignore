@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+backend/dist/
+backend/build/
+
+# Data & secrets
+backend/data/
+!backend/data/.gitkeep
+backend/.env
+*.log
+verification/runtime/
+verification/desktop/
+verification/*.zip
+verification/*.png
+verification/*.log
+verification/build/
+verification/*.json
+verification/*.crate
+verification/pywinpty-*
+verification/winpty-rs-*
+verification/native-source/
+
+# Historical binary bundle and generated comparison pages are kept outside the source upload.
+研序ScholarFlow-便携版/
+研序ScholarFlow-便携版.zip
+
+# External reference checkouts are not part of the submission source tree.
+reference/
+.firecrawl/
+
+# Local submission build outputs and temporary reports.
+submission/_rendered/
+submission/_work/
+submission/*.zip
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

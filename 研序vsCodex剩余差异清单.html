@@ -1,0 +1,111 @@
+<html style="margin:0;padding:0;">
+<title>研序 ScholarFlow vs Codex 剩余差异全清单（含微小差异）</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:26px 20px 40px; font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:#1f2430; background:#f4f5f7; }
+  .wrap { max-width:1200px; margin:0 auto; }
+  h1 { font-size:21px; font-weight:700; margin:0 0 6px; }
+  .lead { font-size:13.5px; color:#5a6172; line-height:1.6; margin:0 0 20px; }
+  .lead b { color:#0a59f7; }
+  .group { background:#fff; border:1px solid #e8eaef; border-radius:14px; padding:16px 18px; margin-bottom:16px; }
+  .group h2 { font-size:14.5px; font-weight:700; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+  .count { font-size:11px; font-weight:600; color:#8a909c; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th { text-align:left; font-size:11px; color:#8a909c; font-weight:600; padding:7px 9px; border-bottom:1px solid #eceef2; }
+  td { padding:9px; border-bottom:1px solid #f2f3f6; vertical-align:top; line-height:1.5; }
+  td.n { font-weight:600; width:19%; }
+  td.c { color:#5a6172; width:30%; }
+  td.o { color:#5a6172; width:26%; }
+  .pri { display:inline-block; font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:20px; white-space:nowrap; }
+  .p-high { background:#e9f7ee; color:#1a9e54; }
+  .p-mid { background:#fdf3e3; color:#c87f1a; }
+  .p-low { background:#f1f2f5; color:#8a909c; }
+  .p-na { background:#f4f5f7; color:#aab0bc; }
+  .legend { display:flex; gap:14px; margin:0 0 16px; font-size:11.5px; color:#5a6172; }
+  .legend span { display:inline-flex; align-items:center; gap:5px; }
+  .sw { width:10px; height:10px; border-radius:50%; }
+  .note { font-size:12px; color:#8a909c; margin-top:6px; line-height:1.6; }
+</style>
+<div class="wrap">
+  <h1>研序 ScholarFlow vs Codex：剩余差异全清单（含微小差异）</h1>
+  <p class="lead">在已完成 P0/P1/P2 共 <b>10 件</b>（审批、规划、压缩、工作规范、多模态、子 agent、审稿件、自检、多格式导出、后台任务）之后，逐条对照 Codex CLI v0.131 的 <b>45 个斜杠命令、Hooks、MCP/Skills/Rules 配置项</b>，剩余差异如下。标 <b>建议做</b> 的是科研场景有真实价值的，<b>可选/不适用</b> 多为代码或终端专属。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:#1a9e54;"></i>建议做（高价值）</span>
+    <span><i class="sw" style="background:#c87f1a;"></i>可做（中价值）</span>
+    <span><i class="sw" style="background:#8a909c;"></i>微小（低价值）</span>
+    <span><i class="sw" style="background:#aab0bc;"></i>不适用（代码/终端专属）</span>
+  </div>
+
+  <div class="group">
+    <h2>一、Agent 骨架与工程能力 <span class="count">10 项</span></h2>
+    <table>
+      <thead><tr><th>能力</th><th>Codex 做法</th><th>研序现状</th><th>优先级</th></tr></thead>
+      <tbody>
+        <tr><td class="n">Hooks 生命周期钩子</td><td class="c">PreToolUse/PostToolUse/PreCompact/SessionStart/Stop 等 10 类事件挂脚本</td><td class="o">无钩子，动作不可扩展</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">推理强度 reasoning effort</td><td class="c">minimal/low/medium/high，会话内可切</td><td class="o">无，固定强度</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">会话历史管理</td><td class="c">/resume 会话列表、/new、/clear</td><td class="o">只有 conversation_id，无会话列表/切换</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">会话分叉 /fork /side</td><td class="c">保留原记录分叉；临时旁支不污染主线</td><td class="o">无分叉</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">后台任务完成通知</td><td class="c">完成/需审批时桌面通知</td><td class="o">无通知，需手动刷新</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">记忆开关 /memories</td><td class="c">分别控制"生成记忆"与"使用记忆"</td><td class="o">有记忆但无开关</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">持久目标 /goal</td><td class="c">跨轮目标（如覆盖率提到 90%），可暂停</td><td class="o">无</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">真实沙箱隔离</td><td class="c">限定可写位置与网络，进程级隔离</td><td class="o">只有审批，无真沙箱</td><td><span class="pri p-low">微小</span></td></tr>
+        <tr><td class="n">后台进程 /ps /stop</td><td class="c">列出/取消后台终端</td><td class="o">有任务列表，缺统一取消</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">企业策略 requirements.toml</td><td class="c">管理员强制安全设置</td><td class="o">无（SaaS/企业阶段）</td><td><span class="pri p-na">不适用</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="group">
+    <h2>二、MCP / Skills / Rules 生态精细度 <span class="count">8 项</span></h2>
+    <table>
+      <thead><tr><th>能力</th><th>Codex 做法</th><th>研序现状</th><th>优先级</th></tr></thead>
+      <tbody>
+        <tr><td class="n">MCP 工具级白/黑名单</td><td class="c">enabled_tools/disabled_tools、每工具 approval/超时</td><td class="o">仅服务器级，无工具级</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">MCP 启用开关</td><td class="c">enabled=false 不删除即可禁用</td><td class="o">只能删除</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">MCP OAuth 支持</td><td class="c">OAuth + bearer + 静态头</td><td class="o">仅 bearer/自定义头</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">技能分层（内置/用户/项目）</td><td class="c">三级目录，用户/项目技能叠加</td><td class="o">仅一个内置目录</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">技能禁用 + $ 调用</td><td class="c">单技能开关；$name 显式调用；隐式策略</td><td class="o">无禁用，靠选择器</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">分层 AGENTS.md</td><td class="c">全局→项目多层合并，override 优先，32KiB 上限</td><td class="o">单一全局 work_rules</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">统一 @ / $ mention</td><td class="c">@ 引用文件/论文/技能/MCP，tab 补全</td><td class="o">仅技能选择器，无统一 mention</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">/init 生成规范脚手架</td><td class="c">一键生成 AGENTS.md 模板</td><td class="o">只有输入框 placeholder</td><td><span class="pri p-mid">可做</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="group">
+    <h2>三、命令、界面与诊断 <span class="count">12 项</span></h2>
+    <table>
+      <thead><tr><th>能力</th><th>Codex 做法</th><th>研序现状</th><th>优先级</th></tr></thead>
+      <tbody>
+        <tr><td class="n">斜杠命令系统</td><td class="c">输入 / 弹命令选择，45 个命令</td><td class="o">功能散在按钮，无斜杠命令</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">状态面板 /status</td><td class="c">模型、审批模式、token 用量一屏可见</td><td class="o">无统一状态面板</td><td><span class="pri p-high">建议做</span></td></tr>
+        <tr><td class="n">token 用量统计</td><td class="c">实时/累计 token 与费用</td><td class="o">只有 latency</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">会话重命名 /title</td><td class="c">自动/手动命名会话</td><td class="o">无会话命名</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">配置层诊断 /debug-config</td><td class="c">codex doctor，显示配置层级与冲突</td><td class="o">无</td><td><span class="pri p-mid">可做</span></td></tr>
+        <tr><td class="n">web_search 模式</td><td class="c">disabled/cached/live 三档</td><td class="o">仅 web_fetch，无模式</td><td><span class="pri p-low">微小</span></td></tr>
+        <tr><td class="n">键盘快捷键体系</td><td class="c">Alt+,/. 调推理、切模式等</td><td class="o">仅 Enter 发送</td><td><span class="pri p-low">微小</span></td></tr>
+        <tr><td class="n">主题切换 /theme</td><td class="c">浅色/深色/语法主题</td><td class="o">单一浅色</td><td><span class="pri p-low">微小</span></td></tr>
+        <tr><td class="n">文件打开器配置</td><td class="c">选择用哪个程序打开文件</td><td class="o">无</td><td><span class="pri p-low">微小</span></td></tr>
+        <tr><td class="n">状态栏自定义 /statusline</td><td class="c">底部显示字段可配</td><td class="o">固定</td><td><span class="pri p-low">微小</span></td></tr>
+        <tr><td class="n">纯净复制 /raw</td><td class="c">无界面干扰复制</td><td class="o">已有复制按钮</td><td><span class="pri p-na">不适用</span></td></tr>
+        <tr><td class="n">可信项目提示</td><td class="c">项目配置仅对可信项目加载</td><td class="o">单机无此概念</td><td><span class="pri p-na">不适用</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="group">
+    <h2>四、终端/订阅专属（科研桌面基本不适用）<span class="count">4 项</span></h2>
+    <table>
+      <thead><tr><th>能力</th><th>Codex 做法</th><th>研序现状</th><th>优先级</th></tr></thead>
+      <tbody>
+        <tr><td class="n">/fast 服务档位</td><td class="c">订阅专属 1.5× 加速</td><td class="o">API 计费，不适用</td><td><span class="pri p-na">不适用</span></td></tr>
+        <tr><td class="n">/personality 沟通风格</td><td class="c">friendly/pragmatic/none</td><td class="o">科研客观语体即可</td><td><span class="pri p-na">不适用</span></td></tr>
+        <tr><td class="n">Vim 编辑模式</td><td class="c">composer 内 vim 模式</td><td class="o">小众，不适用</td><td><span class="pri p-na">不适用</span></td></tr>
+        <tr><td class="n">/diff 代码差异</td><td class="c">git diff（含未跟踪文件）</td><td class="o">代码场景，科研不适用</td><td><span class="pri p-na">不适用</span></td></tr>
+      </tbody>
+    </table>
+    <p class="note">合计剩余差异 34 项：建议做 12 项（高价值）、可做 9 项、微小 7 项、不适用 6 项。建议优先把"建议做"的 12 项落地——其中 Hooks、斜杠命令、会话历史、技能分层、MCP 工具级控制最能体现工程成熟度，也是答辩演示的差异化亮点。</p>
+  </div>
+</div>
+</html>

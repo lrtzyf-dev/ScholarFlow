@@ -1,0 +1,130 @@
+<html style="margin:0;padding:0;">
+<title>研序 ScholarFlow Agent 实现逻辑</title>
+<div style="background:#f5f7fa;padding:28px 20px;font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;">
+<div style="max-width:980px;margin:0 auto;color:#1d2129;">
+
+  <div style="font-size:20px;font-weight:700;margin-bottom:4px;">研序 ScholarFlow · Agent 实现逻辑</div>
+  <div style="font-size:13px;color:#86909c;margin-bottom:22px;">单 Agent · ReAct 式「规划—执行—取证」循环 + 引用闸门（Critic）；过程经 SSE 实时推送</div>
+
+  <!-- 1 入口 -->
+  <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:14px;">
+    <div style="width:38px;height:38px;border-radius:9px;background:#eef3ff;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0a59f7" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    </div>
+    <div>
+      <div style="font-size:14px;font-weight:600;">用户提问</div>
+      <div style="font-size:12px;color:#86909c;margin-top:2px;">问题文本 + 可选范围（paper_id：单篇提问 / 留空：全库检索）</div>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:#c0c4cc;font-size:18px;line-height:1;margin:6px 0;">▼</div>
+
+  <!-- 2 循环容器 -->
+  <div style="border:2px dashed #b8c6f0;border-radius:14px;padding:18px 18px 18px 18px;background:#fbfcff;position:relative;">
+    <div style="position:absolute;top:-11px;left:20px;background:#eef3ff;color:#0a59f7;font-size:12px;font-weight:600;padding:2px 12px;border-radius:999px;">Agent 核心循环 · 最多 6 轮（max_agent_steps）</div>
+
+    <!-- LLM 决策 -->
+    <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:14px 18px;display:flex;gap:14px;align-items:flex-start;">
+      <div style="width:38px;height:38px;border-radius:9px;background:#eef3ff;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0a59f7" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+      </div>
+      <div style="flex:1;">
+        <div style="font-size:14px;font-weight:600;">LLM 决策（System Prompt + 工具定义）</div>
+        <div style="font-size:12px;color:#86909c;margin-top:3px;">规则：事实问题必须先检索；只能基于证据作答；每句论断标 <span style="font-family:monospace;background:#f2f3f5;padding:0 4px;border-radius:4px;">[^eN]</span>；证据不足则拒答</div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+          <span style="font-size:11.5px;border:1px solid #d6e0ff;background:#f5f8ff;color:#0a59f7;padding:4px 11px;border-radius:7px;">工具 retrieve_evidence（检索原文证据）</span>
+          <span style="font-size:11.5px;border:1px solid #e5e6eb;background:#f7f8fa;color:#4e5969;padding:4px 11px;border-radius:7px;">工具 list_papers（列出论文）</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="text-align:center;color:#c0c4cc;font-size:16px;line-height:1;margin:6px 0;">▼</div>
+
+    <!-- 分支 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+      <!-- 调用工具 -->
+      <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:13px 14px;">
+        <div style="font-size:13px;font-weight:600;color:#0a59f7;">返回工具调用 → 执行工具</div>
+        <div style="margin-top:10px;border:1px solid #e5e6eb;border-radius:9px;padding:11px;background:#fafbfc;">
+          <div style="font-size:12px;font-weight:600;color:#1d2129;">retrieve_evidence → 混合检索</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:9px;">
+            <span style="font-size:11px;background:#eef3ff;color:#0a59f7;padding:3px 8px;border-radius:6px;white-space:nowrap;">FTS5 / BM25</span>
+            <span style="color:#c0c4cc;">+</span>
+            <span style="font-size:11px;background:#eef3ff;color:#0a59f7;padding:3px 8px;border-radius:6px;white-space:nowrap;">向量检索</span>
+            <span style="color:#c0c4cc;">→</span>
+            <span style="font-size:11px;background:#e8f7ee;color:#00b42a;padding:3px 8px;border-radius:6px;white-space:nowrap;">RRF 融合</span>
+          </div>
+          <div style="font-size:11px;color:#86909c;margin-top:8px;">证据包：页码 + bbox + 原文片段 + 相关度；无 embedding Key 时向量走本地哈希</div>
+        </div>
+        <div style="font-size:11px;color:#86909c;margin-top:8px;">list_papers → 返回已解析论文清单</div>
+      </div>
+      <!-- 不调用 -->
+      <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:13px 14px;display:flex;flex-direction:column;justify-content:center;">
+        <div style="font-size:13px;font-weight:600;color:#4e5969;">无工具调用 → 直接产出答案</div>
+        <div style="font-size:11.5px;color:#86909c;margin-top:8px;line-height:1.6;">模型认为无需检索（如已在上下文中），以当前内容作为候选答案，退出循环</div>
+      </div>
+    </div>
+
+    <!-- 回环 -->
+    <div style="margin-top:12px;display:flex;align-items:center;gap:10px;">
+      <div style="flex:1;height:0;border-top:2px solid #0a59f7;border-left:2px solid #0a59f7;border-radius:8px 0 0 0;height:22px;"></div>
+      <span style="font-size:12px;font-weight:600;color:#0a59f7;white-space:nowrap;">把工具结果作为 tool 消息追加，回到 LLM 继续决策</span>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:#c0c4cc;font-size:18px;line-height:1;margin:6px 0;">▼</div>
+
+  <!-- 3 引用闸门 -->
+  <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:14px 18px;display:flex;gap:14px;align-items:flex-start;">
+    <div style="width:38px;height:38px;border-radius:9px;background:#fff3e8;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ff7d00" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+    </div>
+    <div style="flex:1;">
+      <div style="font-size:14px;font-weight:600;">引用闸门（Critic）</div>
+      <div style="font-size:12px;color:#86909c;margin-top:3px;">每个实质论断（≥10 字）必须带有效 <span style="font-family:monospace;">[^eN]</span>；不允许超出证据范围的无效标记</div>
+      <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;">
+        <span style="font-size:11.5px;border:1px solid #ffd8a8;background:#fff7e8;color:#ff7d00;padding:4px 11px;border-radius:7px;">不通过 → 真实模型重写 1 次</span>
+        <span style="font-size:11.5px;border:1px solid #ffb8b8;background:#ffece8;color:#f53f3f;padding:4px 11px;border-radius:7px;">仍失败 → 拒答</span>
+        <span style="font-size:11.5px;border:1px solid #b7e8c0;background:#e8ffea;color:#00b42a;padding:4px 11px;border-radius:7px;">通过 → 进入交付</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:#c0c4cc;font-size:18px;line-height:1;margin:6px 0;">▼</div>
+
+  <!-- 4 交付 -->
+  <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:14px 18px;display:flex;gap:14px;align-items:center;">
+    <div style="width:38px;height:38px;border-radius:9px;background:#e8f7ee;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00b42a" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+    </div>
+    <div style="flex:1;">
+      <div style="font-size:14px;font-weight:600;">落库 + 交付</div>
+      <div style="font-size:12px;color:#86909c;margin-top:2px;">问答记录（QARecord：答案/论断/耗时/过程）写入数据库；SSE 推送 answer、done 事件</div>
+    </div>
+  </div>
+
+  <!-- SSE 时间线 -->
+  <div style="margin-top:22px;background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:14px 18px;">
+    <div style="font-size:13px;font-weight:600;margin-bottom:12px;">SSE 事件流（前端过程面板按序渲染）</div>
+    <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;">
+      <span style="font-size:11px;background:#f2f3f5;padding:4px 9px;border-radius:6px;">status</span>
+      <span style="color:#c0c4cc;padding:0 3px;">→</span>
+      <span style="font-size:11px;background:#f2f3f5;padding:4px 9px;border-radius:6px;">plan</span>
+      <span style="color:#c0c4cc;padding:0 3px;">→</span>
+      <span style="font-size:11px;background:#f2f3f5;padding:4px 9px;border-radius:6px;">step</span>
+      <span style="color:#c0c4cc;padding:0 3px;">→</span>
+      <span style="font-size:11px;background:#eef3ff;color:#0a59f7;padding:4px 9px;border-radius:6px;">tool_call</span>
+      <span style="color:#c0c4cc;padding:0 3px;">→</span>
+      <span style="font-size:11px;background:#eef3ff;color:#0a59f7;padding:4px 9px;border-radius:6px;">tool_result</span>
+      <span style="color:#c0c4cc;padding:0 3px;">→</span>
+      <span style="font-size:11px;background:#fff3e8;color:#ff7d00;padding:4px 9px;border-radius:6px;">critic</span>
+      <span style="color:#c0c4cc;padding:0 3px;">→</span>
+      <span style="font-size:11px;background:#e8f7ee;color:#00b42a;padding:4px 9px;border-radius:6px;">answer</span>
+      <span style="color:#c0c4cc;padding:0 3px;">→</span>
+      <span style="font-size:11px;background:#e8f7ee;color:#00b42a;padding:4px 9px;border-radius:6px;">done</span>
+    </div>
+  </div>
+
+</div>
+</div>
+</html>

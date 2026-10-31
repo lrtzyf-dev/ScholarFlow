@@ -1,0 +1,100 @@
+<html style="margin:0;padding:0;">
+<title>Agent 调用大模型检索文档库的实现链路</title>
+<div style="background:#f5f7fa;padding:28px 20px;font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;">
+<div style="max-width:1000px;margin:0 auto;color:#1d2129;">
+
+  <div style="font-size:20px;font-weight:700;margin-bottom:4px;">Agent 调用大模型检索文档库 · 实现链路</div>
+  <div style="font-size:13px;color:#86909c;margin-bottom:8px;">两次调用大模型：第 1 次让模型决定"查什么"，第 2 次让模型基于"查到的证据"作答</div>
+  <div style="display:flex;gap:16px;margin-bottom:20px;font-size:11.5px;flex-wrap:wrap;">
+    <span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:11px;height:11px;border-radius:3px;background:#0a59f7;"></span>大模型做的事</span>
+    <span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:11px;height:11px;border-radius:3px;background:#00b42a;"></span>程序代码做的事</span>
+  </div>
+
+  <!-- 步骤1 -->
+  <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:13px 16px;display:flex;gap:13px;align-items:flex-start;border-left:4px solid #0a59f7;">
+    <div style="font-size:13px;font-weight:700;color:#0a59f7;flex-shrink:0;width:22px;">①</div>
+    <div>
+      <div style="font-size:13.5px;font-weight:600;">第 1 次请求大模型：把「工具定义」一起发过去</div>
+      <div style="font-size:12px;color:#86909c;margin-top:3px;">POST {base}/chat/completions，messages = 系统规则 + 用户问题；body 里带两个 function 工具（retrieve_evidence、list_papers）</div>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:#c0c4cc;font-size:16px;line-height:1;margin:5px 0;">▼</div>
+
+  <!-- 步骤2 -->
+  <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:13px 16px;display:flex;gap:13px;align-items:flex-start;border-left:4px solid #0a59f7;">
+    <div style="font-size:13px;font-weight:700;color:#0a59f7;flex-shrink:0;width:22px;">②</div>
+    <div style="flex:1;">
+      <div style="font-size:13.5px;font-weight:600;">模型返回工具调用，并自己「改写检索词」</div>
+      <div style="font-size:12px;color:#86909c;margin-top:3px;">tool_calls = retrieve_evidence，参数 arguments 里的 <span style="font-family:monospace;">query</span> 由模型从问题提炼（补术语/标题/数字），还可指定 k、paper_id</div>
+      <div style="margin-top:9px;background:#f5f8ff;border:1px solid #d6e0ff;border-radius:8px;padding:9px 11px;font-size:11.5px;color:#4e5969;line-height:1.7;">
+        用户问："它效果比老方法好多少？" → 模型改写 query：<span style="color:#0a59f7;font-family:monospace;">"Transformer BLEU 41.8 对比 baseline 循环神经网络"</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:#c0c4cc;font-size:16px;line-height:1;margin:5px 0;">▼</div>
+
+  <!-- 步骤3 检索内部 -->
+  <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:14px 16px;border-left:4px solid #00b42a;">
+    <div style="display:flex;gap:13px;align-items:flex-start;">
+      <div style="font-size:13px;font-weight:700;color:#00b42a;flex-shrink:0;width:22px;">③</div>
+      <div style="flex:1;">
+        <div style="font-size:13.5px;font-weight:600;">程序执行 retrieve：混合检索（候选量 = topk × 4）</div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:11px;">
+          <div style="border:1px solid #e5e6eb;border-radius:9px;padding:11px;background:#fafbfc;">
+            <div style="font-size:12px;font-weight:600;">路 A · 关键词（FTS5 / BM25）</div>
+            <div style="font-size:11px;color:#86909c;margin-top:5px;line-height:1.6;">query 拆成英文单词 + 中文单字，OR 匹配 chunks_fts，按 BM25 相关度排序（中文已按字展开）</div>
+          </div>
+          <div style="border:1px solid #e5e6eb;border-radius:9px;padding:11px;background:#fafbfc;">
+            <div style="font-size:12px;font-weight:600;">路 B · 语义（向量）</div>
+            <div style="font-size:11px;color:#86909c;margin-top:5px;line-height:1.6;">query 编码成向量，与 numpy 向量库矩阵做点积取余弦；无 Key 时用本地哈希向量</div>
+          </div>
+        </div>
+
+        <div style="text-align:center;margin:10px 0 8px;">
+          <span style="font-size:11.5px;background:#e8f7ee;color:#00b42a;padding:5px 14px;border-radius:999px;font-weight:600;">RRF 融合：score = Σ 1/(60 + 名次 + 1)，两路合并取 topk</span>
+        </div>
+        <div style="font-size:11.5px;color:#86909c;line-height:1.6;">兼顾「精确关键词命中」与「语义相近命中」；命中后截取含检索词的窗口，打包成证据包</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:#c0c4cc;font-size:16px;line-height:1;margin:5px 0;">▼</div>
+
+  <!-- 步骤4 证据包 -->
+  <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:13px 16px;display:flex;gap:13px;align-items:flex-start;border-left:4px solid #00b42a;">
+    <div style="font-size:13px;font-weight:700;color:#00b42a;flex-shrink:0;width:22px;">④</div>
+    <div style="flex:1;">
+      <div style="font-size:13.5px;font-weight:600;">证据包 Evidence（编号 e1…eN 此刻确定）</div>
+      <div style="display:flex;gap:7px;margin-top:9px;flex-wrap:wrap;">
+        <span style="font-size:11px;background:#f2f3f5;padding:3px 9px;border-radius:6px;">页码 page</span>
+        <span style="font-size:11px;background:#f2f3f5;padding:3px 9px;border-radius:6px;">位置 bbox</span>
+        <span style="font-size:11px;background:#f2f3f5;padding:3px 9px;border-radius:6px;">原文 quote</span>
+        <span style="font-size:11px;background:#f2f3f5;padding:3px 9px;border-radius:6px;">相关度 score</span>
+        <span style="font-size:11px;background:#f2f3f5;padding:3px 9px;border-radius:6px;">所属论文</span>
+      </div>
+      <div style="font-size:11px;color:#86909c;margin-top:8px;">页码 + bbox 可在阅读器定位并高亮原文；这些 id 就是答案里 [^eN] 的合法范围</div>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:#c0c4cc;font-size:16px;line-height:1;margin:5px 0;">▼</div>
+
+  <!-- 步骤5 回模型 -->
+  <div style="background:#fff;border:1px solid #e5e6eb;border-radius:12px;padding:13px 16px;display:flex;gap:13px;align-items:flex-start;border-left:4px solid #0a59f7;">
+    <div style="font-size:13px;font-weight:700;color:#0a59f7;flex-shrink:0;width:22px;">⑤</div>
+    <div style="flex:1;">
+      <div style="font-size:13.5px;font-weight:600;">第 2 次请求大模型：把证据作为 tool 消息喂回去</div>
+      <div style="font-size:12px;color:#86909c;margin-top:3px;">模型只基于这些证据组织自然语言答案，每句论断标注对应 <span style="font-family:monospace;">[^eN]</span>；之后再过引用闸门</div>
+    </div>
+  </div>
+
+  <!-- 离线说明 -->
+  <div style="margin-top:18px;background:#fff7e8;border:1px solid #ffd8a8;border-radius:10px;padding:11px 14px;font-size:12px;color:#9c6b00;line-height:1.7;">
+    <span style="font-weight:600;">无 Key 离线时：</span>MockLLM 第 1 轮强制返回 retrieve_evidence（query 直接用原话），同样走混合检索，第 2 轮用证据模板拼答案——检索链路与真实模型完全一致，可离线演示。
+  </div>
+
+</div>
+</div>
+</html>
