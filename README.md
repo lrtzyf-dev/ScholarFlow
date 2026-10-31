@@ -123,8 +123,6 @@ desktop/                launcher.py（pywebview）、scholarflow.spec、图标
 
 ## 竞赛提交材料
 
-本版本按竞赛要求整理了 Windows 桌面端提交材料：
-
 - 技术文档：[submission/研序ScholarFlow-技术文档.pdf](submission/研序ScholarFlow-技术文档.pdf)（PDF，不超过 30 页）及其源稿 [submission/技术文档.md](submission/技术文档.md)。
 - 演示视频脚本：[submission/演示视频脚本.md](submission/演示视频脚本.md)，按 5–8 分钟普通话、1080p MP4 编排。
 - 材料清单：[submission/材料清单.md](submission/材料清单.md)；托管和在线演示待补字段见 [submission/在线演示说明.md](submission/在线演示说明.md)。
