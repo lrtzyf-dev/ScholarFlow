@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import re
 import urllib.parse
@@ -17,10 +19,14 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
+from app.netguard import SSRFError, request_guard_hook
 from mcp.server.mcpserver import MCPServer
 
 _UA = "ScholarFlow/1.0 (research assistant; +https://scholarflow.local)"
 ATOM = "{http://www.w3.org/2005/Atom}"
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_WEB_TEXT_CHARS = 8000
+REQUEST_TIMEOUT_SECONDS = 25.0
 
 server = MCPServer("builtin")
 
@@ -29,12 +35,178 @@ def _dumps(data: object) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
+class _ToolError(ValueError):
+    def __init__(self, code: str, status_code: int | None = None):
+        self.code, self.status_code = code, status_code
+        super().__init__(code)
+
+
+_ERROR_HINTS = {
+    "invalid_request": "请求参数无效，请检查搜索词、条数或网页地址。",
+    "blocked_target": "目标或重定向地址不是允许访问的公网地址，未读取其内容。",
+    "authentication": "远端服务要求有效鉴权，当前请求未获授权。",
+    "forbidden": "远端服务拒绝访问，不能将拒绝访问页面作为正文。",
+    "not_found": "远端资源不存在，未获得可读取内容。",
+    "rate_limited": "远端服务已限流，请稍后重试。",
+    "timeout": "请求超时，未自动重试。",
+    "unavailable": "远端服务暂时不可用，未自动重试。",
+    "http_error": "远端服务返回非成功状态，未将响应作为资料。",
+    "network_error": "网络请求失败，请检查网络后重试。",
+    "invalid_response": "远端返回的 JSON、XML 或字段结构无效，不能作为检索结果。",
+    "upstream_error": "远端服务报告执行失败，未获得可用检索结果。",
+    "response_too_large": "远端响应超过本地大小限制，未将不完整响应作为资料。",
+    "incomplete_response": "远端没有返回完整的成功响应，未将其作为资料。",
+    "unsupported_content_type": "此内容不是可直接读取的网页文本，请通过文件或文档解析入口处理。",
+    "empty_content": "网页没有可读取的正文，不能声称已经阅读原文。",
+}
+
+
+def _blocked_target_diagnostic(exc: SSRFError) -> tuple[str, str]:
+    # Interpret only messages emitted by our local guard. Never reflect the
+    # hostname, URL, resolved address, or an upstream exception into the result.
+    message = str(exc)
+    if message.startswith("无法解析主机名："):
+        return "dns_resolution_failed", "当前电脑无法解析远端域名，未发出请求。请检查 DNS 或代理的域名解析设置后重试。"
+    if message.startswith("禁止访问内网/保留地址："):
+        try:
+            address = ipaddress.ip_address(message.split("：", 1)[1])
+            if address.version == 4 and address in ipaddress.ip_network("198.18.0.0/15"):
+                return "reserved_test_address", (
+                    "当前 DNS 返回 198.18.0.0/15 保留测试地址，可能来自代理的 fake-IP 模式。"
+                    "请求已阻止；请让该服务域名使用真实公网 IP 解析后重试。")
+        except ValueError:
+            pass
+        return "non_public_address", "目标或重定向解析到内网、回环或保留地址，已阻止访问。"
+    return "non_public_target", _ERROR_HINTS["blocked_target"]
+
+
 def _err(source: str, exc: Exception) -> str:
-    """把网络/限流错误转成结构化 JSON（不抛异常，Agent 可据此降级或提示）。"""
-    code = getattr(getattr(exc, "response", None), "status_code", None)
-    hint = "请求过于频繁，已被限流，请稍后重试" if code in (429, 403) else "网络请求失败，请检查网络后重试"
-    return _dumps({"source": source, "error": f"{type(exc).__name__}: {exc}",
-                   "status_code": code, "hint": hint, "papers": []})
+    """只返回稳定诊断；远端错误正文、URL 参数和异常详情不进入结果。"""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    reason, blocked_hint = None, None
+    if isinstance(exc, _ToolError):
+        code, status = exc.code, exc.status_code
+    elif isinstance(exc, SSRFError):
+        code, status = "blocked_target", 400
+        reason, blocked_hint = _blocked_target_diagnostic(exc)
+    elif isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        code = "timeout"
+    elif isinstance(exc, httpx.HTTPStatusError):
+        code = {401: "authentication", 403: "forbidden", 404: "not_found", 408: "timeout",
+                429: "rate_limited", 504: "timeout"}.get(status, "unavailable" if status >= 500 else "http_error")
+    elif isinstance(exc, httpx.InvalidURL):
+        code = "invalid_request"
+    elif isinstance(exc, httpx.HTTPError):
+        code = "network_error"
+    else:
+        code = "invalid_response"
+    hint = blocked_hint or _ERROR_HINTS[code]
+    result = {"source": source, "error": hint, "code": code, "status": "failed",
+              "status_code": status, "hint": hint, "papers": [], "automatic_retry": False}
+    if reason:
+        result["reason_code"] = reason
+    return _dumps(result)
+
+
+async def _guard_request(request: httpx.Request) -> None:
+    # DNS resolution is synchronous; keep it off the shared MCP event loop so
+    # the request deadline and other conversations can run while DNS is slow.
+    await asyncio.to_thread(request_guard_hook, request)
+
+
+async def _read_response(url: str, params: dict | None = None) -> httpx.Response:
+    async with httpx.AsyncClient(
+        timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True, max_redirects=5, trust_env=False,
+        event_hooks={"request": [_guard_request]},
+        headers={"User-Agent": _UA, "Accept-Encoding": "identity"},
+    ) as client:
+        async with client.stream("GET", url, params=params) as response:
+            response.raise_for_status()
+            if response.status_code != 200:
+                raise _ToolError("incomplete_response", response.status_code)
+            size = response.headers.get("content-length")
+            if size is not None:
+                if not size.isascii() or not size.isdigit():
+                    raise _ToolError("invalid_response", response.status_code)
+                if len(size) > 10 or int(size) > MAX_RESPONSE_BYTES:
+                    raise _ToolError("response_too_large", response.status_code)
+            payload = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(payload) + len(chunk) > MAX_RESPONSE_BYTES:
+                    raise _ToolError("response_too_large", response.status_code)
+                payload.extend(chunk)
+            # HTTPX already decoded the stream; do not decode Content-Encoding twice.
+            return httpx.Response(response.status_code, content=bytes(payload), request=response.request,
+                                  headers={"content-type": response.headers.get("content-type", "")})
+
+
+async def _get_response(url: str, params: dict | None = None) -> httpx.Response:
+    # Socket idle timeouts alone do not bound an endless stream of small chunks.
+    return await asyncio.wait_for(_read_response(url, params), timeout=REQUEST_TIMEOUT_SECONDS)
+
+
+def _search_inputs(query: str, limit: int, default: int) -> int:
+    if (not isinstance(query, str) or not query.strip() or len(query) > 2048
+            or any(ord(c) < 32 for c in query) or isinstance(limit, bool)):
+        raise _ToolError("invalid_request")
+    if not isinstance(limit, (int, str)):
+        raise _ToolError("invalid_request")
+    try:
+        return max(1, min(int(limit or default), 30))
+    except (ValueError, TypeError):
+        raise _ToolError("invalid_request") from None
+
+
+def _object(value) -> dict:
+    if not isinstance(value, dict):
+        raise _ToolError("invalid_response")
+    return value
+
+
+def _array(value) -> list:
+    if not isinstance(value, list):
+        raise _ToolError("invalid_response")
+    return value
+
+
+def _text(value, *, required=False) -> str:
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str) or (required and not value.strip()):
+        raise _ToolError("invalid_response")
+    return value
+
+
+def _number(value):
+    if value is not None and (type(value) is not int or value < 0):
+        raise _ToolError("invalid_response")
+    return value
+
+
+def _unique_object(pairs) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _ToolError("invalid_response")
+        result[key] = value
+    return result
+
+
+def _invalid_json_constant(value):
+    raise _ToolError("invalid_response")
+
+
+def _json_object(response: httpx.Response) -> dict:
+    data = _object(json.loads(response.content, object_pairs_hook=_unique_object, parse_constant=_invalid_json_constant))
+    if "error" in data:
+        raise _ToolError("upstream_error", response.status_code)
+    return data
+
+
+def _search_result(source: str, query: str, papers: list) -> str:
+    return _dumps({"source": source, "query": query, "count": len(papers), "papers": papers,
+                   "status": "ok" if papers else "empty", "trust": "untrusted_external",
+                   "authorizes_actions": False})
 
 
 @server.tool()
@@ -45,38 +217,35 @@ async def arxiv_search(query: str, max_results: int = 8) -> str:
         query: 检索关键词（可含英文术语，如 "large language model agent"）
         max_results: 返回条数（1-30）
     """
-    max_results = max(1, min(int(max_results or 8), 30))
-    q = urllib.parse.quote(query)
-    url = (
-        f"https://export.arxiv.org/api/query?search_query=all:{q}"
-        f"&start=0&max_results={max_results}&sortBy=relevance"
-    )
     try:
-        async with httpx.AsyncClient(
-            timeout=25, follow_redirects=True, headers={"User-Agent": _UA}
-        ) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-    except httpx.HTTPError as exc:
+        max_results = _search_inputs(query, max_results, 8)
+        resp = await _get_response("https://export.arxiv.org/api/query", {
+            "search_query": f"all:{query}", "start": 0, "max_results": max_results, "sortBy": "relevance"})
+        if (b"\x00" in resp.content or b"<!DOCTYPE" in resp.content.upper()
+                or b"<!ENTITY" in resp.content.upper()):
+            raise _ToolError("invalid_response")
+        root = ET.fromstring(resp.content)
+        if root.tag != f"{ATOM}feed":
+            raise _ToolError("invalid_response")
+        entries = root.findall(f"{ATOM}entry")
+        if len(entries) > max_results:
+            raise _ToolError("invalid_response")
+        papers = []
+        for entry in entries:
+            link = _text(entry.findtext(f"{ATOM}id"), required=True).strip()
+            if urllib.parse.urlsplit(link).path.startswith("/api/errors"):
+                raise _ToolError("upstream_error", resp.status_code)
+            pdf = next((item.get("href", "") for item in entry.findall(f"{ATOM}link") if item.get("title") == "pdf"), "")
+            authors = [_text(a.findtext(f"{ATOM}name"), required=True) for a in entry.findall(f"{ATOM}author")]
+            papers.append({
+                "title": _text(entry.findtext(f"{ATOM}title"), required=True).replace("\n", " ").strip(),
+                "authors": ", ".join(authors),
+                "abstract": _text(entry.findtext(f"{ATOM}summary")).replace("\n", " ").strip(),
+                "published": _text(entry.findtext(f"{ATOM}published"))[:10], "url": link, "pdf": pdf,
+            })
+        return _search_result("arxiv", query, papers)
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, ET.ParseError, TimeoutError) as exc:
         return _err("arxiv", exc)
-    root = ET.fromstring(resp.text)
-    papers = []
-    for entry in root.findall(f"{ATOM}entry"):
-        link = (entry.findtext(f"{ATOM}id") or "").strip()
-        pdf = ""
-        for l in entry.findall(f"{ATOM}link"):
-            if l.get("title") == "pdf":
-                pdf = l.get("href", "")
-        authors = [a.findtext(f"{ATOM}name") or "" for a in entry.findall(f"{ATOM}author")]
-        papers.append({
-            "title": (entry.findtext(f"{ATOM}title") or "").replace("\n", " ").strip(),
-            "authors": ", ".join(authors),
-            "abstract": (entry.findtext(f"{ATOM}summary") or "").replace("\n", " ").strip(),
-            "published": (entry.findtext(f"{ATOM}published") or "")[:10],
-            "url": link,
-            "pdf": pdf,
-        })
-    return _dumps({"source": "arxiv", "query": query, "count": len(papers), "papers": papers})
 
 
 @server.tool()
@@ -87,37 +256,30 @@ async def semantic_scholar_search(query: str, limit: int = 8) -> str:
         query: 检索关键词
         limit: 返回条数（1-30）
     """
-    limit = max(1, min(int(limit or 8), 30))
-    fields = "title,authors,year,abstract,externalIds,url,openAccessPdf,venue,citationCount"
-    params = {"query": query, "limit": limit, "fields": fields}
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
     try:
-        async with httpx.AsyncClient(
-            timeout=25, follow_redirects=True, headers={"User-Agent": _UA}
-        ) as client:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-    except httpx.HTTPError as exc:
+        limit = _search_inputs(query, limit, 8)
+        fields = "title,authors,year,abstract,externalIds,url,openAccessPdf,venue,citationCount"
+        resp = await _get_response("https://api.semanticscholar.org/graph/v1/paper/search",
+                                   {"query": query, "limit": limit, "fields": fields})
+        items = _array(_json_object(resp).get("data"))
+        if len(items) > limit:
+            raise _ToolError("invalid_response")
+        papers = []
+        for raw in items:
+            p = _object(raw)
+            authors = ", ".join(_text(_object(a).get("name")) for a in _array(p.get("authors") if p.get("authors") is not None else []))
+            ext = _object(p.get("externalIds") if p.get("externalIds") is not None else {})
+            oa = _object(p.get("openAccessPdf") if p.get("openAccessPdf") is not None else {})
+            papers.append({
+                "title": _text(p.get("title"), required=True), "authors": authors,
+                "year": _number(p.get("year")), "venue": _text(p.get("venue")),
+                "abstract": _text(p.get("abstract")), "doi": _text(ext.get("DOI")),
+                "citations": _number(p.get("citationCount", 0)), "url": _text(p.get("url")),
+                "pdf": _text(oa.get("url")),
+            })
+        return _search_result("semantic_scholar", query, papers)
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, RecursionError, TimeoutError) as exc:
         return _err("semantic_scholar", exc)
-    data = resp.json()
-    papers = []
-    for p in data.get("data", []) or []:
-        authors = ", ".join(a.get("name", "") for a in (p.get("authors") or []))
-        ext = p.get("externalIds") or {}
-        oa = p.get("openAccessPdf") or {}
-        papers.append({
-            "title": p.get("title", ""),
-            "authors": authors,
-            "year": p.get("year", ""),
-            "venue": p.get("venue", ""),
-            "abstract": (p.get("abstract") or ""),
-            "doi": ext.get("DOI", ""),
-            "citations": p.get("citationCount", 0),
-            "url": p.get("url", ""),
-            "pdf": oa.get("url", ""),
-        })
-    return _dumps({"source": "semantic_scholar", "query": query,
-                   "count": len(papers), "papers": papers})
 
 
 @server.tool()
@@ -128,38 +290,36 @@ async def crossref_search(query: str, rows: int = 8) -> str:
         query: 检索关键词
         rows: 返回条数（1-30）
     """
-    rows = max(1, min(int(rows or 8), 30))
-    url = "https://api.crossref.org/works"
     try:
-        async with httpx.AsyncClient(
-            timeout=25, follow_redirects=True, headers={"User-Agent": _UA}
-        ) as client:
-            resp = await client.get(url, params={"query": query, "rows": rows})
-            resp.raise_for_status()
-    except httpx.HTTPError as exc:
+        rows = _search_inputs(query, rows, 8)
+        resp = await _get_response("https://api.crossref.org/works", {"query": query, "rows": rows})
+        data = _json_object(resp)
+        if data.get("status", "ok") != "ok":
+            raise _ToolError("upstream_error", resp.status_code)
+        items = _array(_object(data.get("message")).get("items"))
+        if len(items) > rows:
+            raise _ToolError("invalid_response")
+        papers = []
+        for raw in items:
+            it = _object(raw)
+            names = []
+            for author in _array(it.get("author") if it.get("author") is not None else []):
+                author = _object(author)
+                names.append(_text(author.get("name")) or " ".join(filter(None, [_text(author.get("given")), _text(author.get("family"))])))
+            titles = [_text(value) for value in _array(it.get("title", []))]
+            venues = [_text(value) for value in _array(it.get("container-title", []))]
+            issued = _object(it.get("issued") if it.get("issued") is not None else {})
+            dates = _array(issued.get("date-parts", []))
+            first_date = _array(dates[0]) if dates else []
+            year = _number(first_date[0]) if first_date else None
+            papers.append({
+                "title": titles[0] if titles else "", "authors": ", ".join(names), "year": year,
+                "venue": venues[0] if venues else "", "type": _text(it.get("type")),
+                "doi": _text(it.get("DOI")), "publisher": _text(it.get("publisher")), "url": _text(it.get("URL")),
+            })
+        return _search_result("crossref", query, papers)
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, RecursionError, TimeoutError) as exc:
         return _err("crossref", exc)
-    items = (resp.json().get("message", {}) or {}).get("items", []) or []
-    papers = []
-    for it in items:
-        def _names(seq):
-            out = []
-            for x in seq or []:
-                out.append(" ".join(filter(None, [x.get("given"), x.get("family")])))
-            return ", ".join(out)
-
-        issued = ((it.get("issued", {}) or {}).get("date-parts", [[None]])[0])
-        papers.append({
-            "title": (it.get("title") or [""])[0],
-            "authors": _names(it.get("author")),
-            "year": issued[0] if issued else None,
-            "venue": (it.get("container-title") or [""])[0],
-            "type": it.get("type", ""),
-            "doi": it.get("DOI", ""),
-            "publisher": it.get("publisher", ""),
-            "url": it.get("URL", ""),
-        })
-    return _dumps({"source": "crossref", "query": query,
-                   "count": len(papers), "papers": papers})
 
 
 @server.tool()
@@ -169,29 +329,53 @@ async def web_fetch(url: str) -> str:
     参数：
         url: 完整网址（http/https）
     """
-    if not re.match(r"^https?://", url):
-        url = "https://" + url
     try:
-        async with httpx.AsyncClient(
-            timeout=25,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ScholarFlow/1.0)"},
-        ) as client:
-            resp = await client.get(url)
-    except httpx.HTTPError as exc:
-        return _err("web", exc)
-    ctype = resp.headers.get("content-type", "")
-    if "html" not in ctype and "<html" not in resp.text[:2000].lower():
-        return _dumps({"url": url, "content_type": ctype, "text": resp.text[:8000]})
-    html = resp.text
-    html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
-    html = re.sub(r"(?s)<[^>]+>", " ", html)
-    import html as _html
+        if (not isinstance(url, str) or not url.strip() or len(url) > 8192
+                or any(ord(c) < 32 for c in url)):
+            raise _ToolError("invalid_request")
+        url = url.strip()
+        if "://" not in url:
+            url = "https://" + url
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            if (parsed.scheme.lower() not in ("http", "https") or not parsed.hostname
+                    or parsed.username is not None or parsed.password is not None
+                    or any(c.isspace() for c in url) or "\\" in url):
+                raise ValueError()
+            parsed.port
+        except ValueError:
+            raise _ToolError("invalid_request") from None
+        resp = await _get_response(url)
+        ctype = resp.headers.get("content-type", "")
+        media = ctype.split(";", 1)[0].strip().lower()
+        if media and not (media.startswith("text/") or media in ("application/json", "application/xml", "application/xhtml+xml")
+                          or media.endswith(("+json", "+xml"))):
+            raise _ToolError("unsupported_content_type", resp.status_code)
+        text = resp.text
+        if "\x00" in text:
+            raise _ToolError("unsupported_content_type", resp.status_code)
+        if "html" in media or "<html" in text[:2000].lower():
+            text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", text)
+            text = re.sub(r"(?s)<!--.*?-->", " ", text)
+            text = re.sub(r"(?s)<[^>]+>", " ", text)
+            import html as _html
 
-    text = _html.unescape(html)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n\s*\n+", "\n\n", text)
-    return _dumps({"url": url, "content_type": "text/html", "text": text.strip()[:8000]})
+            text = _html.unescape(text)
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+            ctype = "text/html"
+        if not text.strip():
+            raise _ToolError("empty_content", resp.status_code)
+        truncated = len(text) > MAX_WEB_TEXT_CHARS
+        return _dumps({"url": url, "content_type": ctype, "text": text[:MAX_WEB_TEXT_CHARS],
+                       "status": "partial" if truncated else "ok", "truncated": truncated,
+                       "output_is_partial": truncated, "text_characters": len(text),
+                       "returned_characters": min(len(text), MAX_WEB_TEXT_CHARS),
+                       "source_completeness": "truncated" if truncated else "unknown",
+                       "original_page_coverage_verified": False, "trust": "untrusted_external",
+                       "authorizes_actions": False})
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, TimeoutError) as exc:
+        return _err("web", exc)
 
 
 def build_builtin_servers() -> dict:

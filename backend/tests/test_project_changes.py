@@ -14,6 +14,7 @@ from app import workspace, workspace_write, project_changes as changes
 from app.main import app
 from app.models import Conversation, ProjectChange, TaskRecord
 from app.db import SessionLocal
+from app.timeutil import utcnow
 
 client = TestClient(app)
 
@@ -161,7 +162,7 @@ def test_crash_reconciliation_never_blindly_retries(project, monkeypatch, stage,
 
 def test_archived_deleted_cross_project_and_active_task(project, db, tmp_path):
     item = propose(project)
-    conv = db.get(Conversation, 'c_edit'); conv.archived_at = datetime.utcnow(); db.commit()
+    conv = db.get(Conversation, 'c_edit'); conv.archived_at = utcnow(); db.commit()
     assert client.post(f"/api/project-changes/{item['id']}/apply", json={'revision':1}).status_code == 409
     conv.archived_at = None; db.commit()
     root = tmp_path/'other'; root.mkdir(); other = workspace.register(db, str(root))

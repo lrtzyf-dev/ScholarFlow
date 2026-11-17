@@ -1,4 +1,4 @@
-"""Foreground cancellation, connection cleanup and deleted conversation races."""
+"""Foreground cancellation, detached observers and deleted conversation races."""
 import asyncio
 import threading
 
@@ -53,7 +53,7 @@ def test_cancel_before_stream_post_and_duplicate_run_id(monkeypatch):
 
 
 @pytest.mark.parametrize("disconnect", [False, True])
-def test_cancel_or_disconnect_releases_waiter_and_worker(monkeypatch, disconnect):
+def test_only_explicit_cancel_releases_approval_waiter(monkeypatch, disconnect):
     run_id = f"chat_waiter_{disconnect}"
     ready, closed = threading.Event(), threading.Event()
 
@@ -78,9 +78,12 @@ def test_cancel_or_disconnect_releases_waiter_and_worker(monkeypatch, disconnect
         assert "event: approval_request" in await anext(stream)
         if disconnect:
             await stream.aclose()
-        else:
-            result = chat.cancel_run(run_id)
-            assert result["status"] == "cancelling"
+            assert run_id in run_store.active_runs()
+            assert approval_store.list_for_run(run_id)
+            assert not cancel_store.is_cancelled(run_id)
+        result = chat.cancel_run(run_id)
+        assert result["status"] == "cancelling"
+        if not disconnect:
             frames = [frame async for frame in stream]
             assert any("event: cancelled" in frame for frame in frames)
         await wait_finished(run_id)
@@ -102,22 +105,23 @@ def test_worker_start_failure_cleans_registry(monkeypatch):
     monkeypatch.setattr(chat.threading.Thread, "start", fail_start)
 
     async def scenario():
-        stream = chat.chat_stream(ChatRequest(question="q", run_id=run_id)).body_iterator
         with pytest.raises(RuntimeError, match="cannot create worker"):
-            await anext(stream)
+            chat.chat_stream(ChatRequest(question="q", run_id=run_id))
         assert run_id not in run_store._active
         assert run_store.cancel(run_id) == "failed"
 
     asyncio.run(scenario())
 
 
-def test_disconnect_with_backpressure_closes_source(monkeypatch):
+def test_disconnect_with_backpressure_finishes_all_work(monkeypatch):
     run_id = "chat_full_queue"
     closed = threading.Event()
+    produced = []
 
     def fake_agent(*args, **kwargs):
         try:
             for i in range(10000):
+                produced.append(i)
                 yield "answer_delta", {"kind": "answer_delta", "text": str(i)}
         finally:
             closed.set()
@@ -130,6 +134,8 @@ def test_disconnect_with_backpressure_closes_source(monkeypatch):
         await stream.aclose()
         await wait_finished(run_id)
         assert closed.is_set()
+        assert len(produced) == 10000
+        assert run_store.cancel(run_id) == "done"
 
     asyncio.run(scenario())
 
@@ -170,6 +176,9 @@ def test_cancel_between_approval_creation_and_wait_never_executes(db, monkeypatc
     monkeypatch.setattr(loop, "get_llm", lambda: Model())
     monkeypatch.setattr(loop, "make_plan", lambda *args: [])
     monkeypatch.setattr(loop, "execute_tool", lambda *a, **k: pytest.fail("cancelled tool ran"))
+    monkeypatch.setattr(loop, "get_tool_specs", lambda: [{
+        "name": "mcp__custom__write", "parameters": {"type": "object"},
+    }])
     monkeypatch.setattr(approval_store, "wait", lambda *a, **k: pytest.fail("waited after cancellation"))
     events = []
     for kind, data in loop.run_agent(db, "q", run_id=run_id):

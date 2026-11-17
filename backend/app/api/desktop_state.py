@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..models import DeletedConversation, DesktopState
 from ..project_search import SearchOptions
+from ..timeutil import utcnow
 
 router = APIRouter(prefix="/api/desktop-state", tags=["desktop-state"])
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -110,6 +111,13 @@ class ConversationState(BaseModel):
     workspace_revision: int = Field(default=0, ge=0)
     editor: EditorDraft | None = None
     file_paths: list[str] = Field(default_factory=list, max_length=8)
+    source_revision_ids: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("source_revision_ids")
+    @classmethod
+    def fixed_sources(cls, value):
+        from ..source_runtime import revision_ids
+        return revision_ids(value)
     text: str = Field(default="", max_length=200_000)
     execution_mode: Literal["execute", "plan"] = "execute"
     paper_id: str | None = Field(default=None, max_length=128)
@@ -173,11 +181,18 @@ def _write(db: Session, key: str, revision: int, value: BaseModel, cid: str | No
         _available(db, cid)
         payload = value.model_dump()
         if isinstance(value, ConversationState):
+            if value.source_revision_ids:
+                from ..source_runtime import capture_bindings
+                from ..source_store import SourceError
+                try:
+                    capture_bindings(db, cid, value.source_revision_ids)
+                except SourceError as exc:
+                    raise HTTPException(409, str(exc)) from None
             from ..workspace import binding_revision
             if value.workspace_revision != binding_revision(db, cid):
                 current_default = ConversationState(workspace_revision=binding_revision(db, cid))
                 raise HTTPException(409, {"message": "会话工作目录已切换，请核对草稿；原文件引用不会自动带入新目录", **_read(db, key, current_default)})
-        now = datetime.utcnow()
+        now = utcnow()
         if revision == 0:
             result = db.execute(insert(DesktopState).values(
                 key=key, revision=1, value=payload, updated_at=now,

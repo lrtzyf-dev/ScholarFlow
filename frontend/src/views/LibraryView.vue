@@ -1,20 +1,99 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { listPapers, importSamples, uploadPaper, getGraph, type Paper } from '../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  Plus,
+  Search,
+  BookOpen,
+  SquarePen,
+  ArrowUpRight,
+  Network,
+  ChartNoAxesCombined,
+} from 'lucide-vue-next'
+import { pagePapers, importSamples, uploadPaper, reparsePaper, type Paper } from '../api'
+import { activeConversationId, conversationState } from '../desktopState'
+import { openLibrarySource, sourceError } from '../sourceApi'
+import { normalizeSourceIds, sourceReaderLocation, librarySourceTypeLabel } from '../sourceSelection'
+import BibliographyImport from '../components/BibliographyImport.vue'
+import LibraryIndexVersions from '../components/LibraryIndexVersions.vue'
 
 const router = useRouter()
 const papers = ref<Paper[]>([])
 const edgeCount = ref(0)
+const libraryCount=ref(0),totalPages=ref(0),parsedCount=ref(0),matchedCount=ref(0),offset=ref(0),nextOffset=ref<number|null>(null)
+const pageSize=40
+let request:AbortController|null=null,loadGeneration=0,searchTimer:ReturnType<typeof setTimeout>|undefined
 const loading = ref(false)
+const loadError = ref('')
 const uploading = ref(false)
 const loadingSamples = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const openingPaper = ref('')
+const bibliographyOpen = ref(false)
+const fixedVersions=ref<Record<string,boolean>>({})
+function showFixedVersions(paper:Paper){fixedVersions.value[paper.id]=!fixedVersions.value[paper.id]}
+async function openPaper(paper: Paper, ask = false, libraryRevisionId?:string) {
+  if (paper.status === 'metadata_only') {
+    ElMessage.info('此记录仅有书目信息，尚未取得全文。请在 Zotero 条目与附件中保存并附加原件。')
+    bibliographyOpen.value = true
+    return
+  }
+  if (!paper.source_revision_id && !libraryRevisionId) {
+    void router.push(ask ? { path: '/chat', query: { paper: paper.id } } : `/reader/${paper.id}`)
+    return
+  }
+  if (openingPaper.value) return
+  openingPaper.value = paper.id
+  try {
+    const cid = activeConversationId.value
+    const source = await openLibrarySource(paper.id, cid, libraryRevisionId)
+    if (ask) {
+      const state = conversationState(cid)
+      await state.ready
+      state.update({ ...state.value.value, paper_id: null, source_revision_ids: normalizeSourceIds([...(state.value.value.source_revision_ids || []), source.revision_id]) })
+      await state.flush()
+      void router.push({ path: '/chat', query: { conv: cid } })
+    } else void router.push(sourceReaderLocation(source.revision_id, source.conversation_id || cid))
+  } catch (error) { ElMessage.error(sourceError(error)) }
+  finally { openingPaper.value = '' }
+}
 
 const keyword = ref('')
 const statusFilter = ref('all')
 const sortKey = ref('recent')
+const selected = ref(new Set<string>())
+const allVisibleSelected = computed(
+  () => filtered.value.length > 0 && filtered.value.every((paper) => selected.value.has(paper.id))
+)
+const someVisibleSelected = computed(() =>
+  filtered.value.some((paper) => selected.value.has(paper.id))
+)
+function togglePaper(id: string) {
+  const next = new Set(selected.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selected.value = next
+}
+function toggleVisible(event: Event) {
+  const checked = (event.target as HTMLInputElement).checked
+  const next = new Set(selected.value)
+  for (const paper of filtered.value) {
+    if (checked) next.add(paper.id)
+    else next.delete(paper.id)
+  }
+  selected.value = next
+}
+function openComparison() {
+  if (selected.value.size < 2) {
+    ElMessage.info('请至少选择 2 篇已解析文献')
+    return
+  }
+  router.push({
+    path: '/compare',
+    query: { papers: [...selected.value] },
+  })
+}
 
 async function loadSamples() {
   loadingSamples.value = true
@@ -29,18 +108,21 @@ async function loadSamples() {
   }
 }
 
-async function refresh() {
+async function refresh(at=offset.value) {
+  const token=++loadGeneration
+  request?.abort();request=new AbortController()
   loading.value = true
+  loadError.value = ''
   try {
-    papers.value = await listPapers()
-    try {
-      const g = await getGraph()
-      edgeCount.value = g.edges?.length || 0
-    } catch {
-      edgeCount.value = 0
-    }
+    const data=await pagePapers({q:keyword.value,status:statusFilter.value,sort:sortKey.value,offset:at,limit:pageSize},request.signal)
+    if(token!==loadGeneration)return
+    if(at>0&&!data.items.length&&data.total){await refresh(Math.max(0,Math.floor((data.total-1)/pageSize)*pageSize));return}
+    papers.value=data.items;offset.value=data.offset;nextOffset.value=data.next_offset;matchedCount.value=data.total
+    libraryCount.value=data.statistics.papers;totalPages.value=data.statistics.pages;parsedCount.value=data.statistics.parsed;edgeCount.value=data.statistics.internal_references
+  } catch (err: any) {
+    if(token===loadGeneration&&err?.code!=='ERR_CANCELED')loadError.value = err?.message || '文献库加载失败，请重试'
   } finally {
-    loading.value = false
+    if(token===loadGeneration)loading.value = false
   }
 }
 
@@ -57,6 +139,20 @@ async function onPick(e: Event) {
     const paper = await uploadPaper(file)
     if (paper.duplicate) {
       ElMessage.info(`该文献已在库中（《${paper.title}》），未重复入库`)
+    } else if (paper.version_duplicate) {
+      const incoming = paper.incoming_version == null ? '未知' : `v${paper.incoming_version}`
+      const existing = paper.existing_version == null ? '未知' : `v${paper.existing_version}`
+      const recommended =
+        paper.recommend === 'incoming' ? `本次上传的 ${incoming}` : `库中已有的 ${existing}`
+      await ElMessageBox.alert(
+        '检测到同一论文的不同版本，两版记录均已保留、未自动替换。\n' +
+          `· 库中已有版本：${existing}\n` +
+          `· 本次上传版本：${incoming}\n` +
+          `· 建议采用：${recommended}\n` +
+          '可在文献库中手动选择保留哪一版。',
+        '发现同论文不同版本',
+        { confirmButtonText: '知道了', type: 'info' }
+      )
     } else if (paper.status === 'failed') {
       ElMessage.error(`解析失败：${paper.error}`)
     } else {
@@ -71,413 +167,536 @@ async function onPick(e: Event) {
   }
 }
 
-// ---- 统计 ----
-const totalPages = computed(() =>
-  papers.value.reduce((s, p) => s + (p.page_count || 0), 0),
-)
-const parsedCount = computed(() => papers.value.filter((p) => p.status === 'parsed').length)
-const processingCount = computed(() => papers.value.filter((p) => p.status === 'processing').length)
-
-// ---- 过滤 + 排序 ----
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  let list = papers.value.filter((p) => {
-    if (statusFilter.value !== 'all' && p.status !== statusFilter.value) return false
-    if (kw) {
-      const hay = `${p.title} ${p.authors} ${p.abstract || ''}`.toLowerCase()
-      if (!hay.includes(kw)) return false
+// ---- 重新解析 / 重试 OCR ----
+const reparsing = ref<Record<string, boolean>>({})
+async function reparse(p: Paper) {
+  reparsing.value[p.id] = true
+  try {
+    const updated = await reparsePaper(p.id)
+    if (updated.status === 'parsed') {
+      ElMessage.success('重新解析成功，已建立索引')
+    } else if (updated.status === 'needs_ocr') {
+      ElMessage.warning('仍未识别到有效正文：' + (updated.error || '待 OCR'))
+    } else {
+      ElMessage.info(`当前状态：${updated.status}`)
     }
-    return true
-  })
-  list = [...list]
-  if (sortKey.value === 'recent') {
-    list.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
-  } else if (sortKey.value === 'pages') {
-    list.sort((a, b) => b.page_count - a.page_count)
-  } else if (sortKey.value === 'title') {
-    list.sort((a, b) => (a.title || '').localeCompare(b.title || ''))
+    await refresh()
+  } catch (err: any) {
+    ElMessage.error(err?.message || '重新解析失败')
+  } finally {
+    reparsing.value[p.id] = false
   }
-  return list
-})
-
-// 封面配色（按 id 稳定取色）
-const COVERS = [
-  ['#0a59f7', '#5b8def'],
-  ['#7c3aed', '#a78bfa'],
-  ['#0d9488', '#2dd4bf'],
-  ['#ea580c', '#fb923c'],
-  ['#db2777', '#f472b6'],
-  ['#2563eb', '#60a5fa'],
-]
-function cover(id: string) {
-  let h = 0
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
-  return COVERS[h % COVERS.length]
 }
 
+const filtered = computed(() => papers.value)
+watch([keyword,statusFilter,sortKey],()=>{request?.abort();loadGeneration++;if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(()=>void refresh(0),180)})
+onBeforeUnmount(()=>{loadGeneration++;request?.abort();if(searchTimer)clearTimeout(searchTimer)})
+
 function statusBadge(p: Paper) {
+  if (p.status === 'metadata_only') return { text: '仅书目 · 无全文', cls: 'mock' }
   if (p.status === 'parsed') return { text: '已解析', cls: 'ok' }
   if (p.status === 'failed') return { text: '解析失败', cls: 'fail' }
+  if (p.status === 'needs_ocr') return { text: '待 OCR', cls: 'mock' }
   return { text: '解析中', cls: 'mock' }
 }
 
 function fmtDate(s: string) {
   const d = new Date(s)
-  return `${d.getMonth() + 1}/${d.getDate()}`
+  return Number.isNaN(d.getTime()) ? '—' : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`
 }
 
-onMounted(refresh)
+onMounted(()=>void refresh())
 </script>
 
 <template>
-  <div class="page">
+  <div class="page library-page">
     <div class="page-head">
       <div>
-        <div class="page-title">文献库</div>
-        <div class="page-desc">上传论文 PDF，自动完成解析、切块、全文索引与向量索引</div>
+        <h1 class="page-title">文献库</h1>
+        <p class="page-desc">阅读、整理，以及下一次研究的起点。</p>
       </div>
       <div class="toolbar">
-        <button class="el-button" :disabled="loadingSamples" @click="loadSamples">
+        <button class="el-button" @click="bibliographyOpen = !bibliographyOpen">书目 / Zotero</button>
+        <button class="el-button" :disabled="loadingSamples || uploading" @click="loadSamples">
           {{ loadingSamples ? '加载中…' : '加载示例论文' }}
         </button>
-        <button class="el-button el-button--primary" :disabled="uploading" @click="fileInput?.click()">
-          {{ uploading ? '上传解析中…' : '上传 PDF' }}
+        <button
+          class="el-button el-button--primary"
+          :disabled="uploading"
+          @click="fileInput?.click()"
+        >
+          <Plus :size="16" />{{ uploading ? '上传解析中…' : '导入文献' }}
         </button>
-        <input ref="fileInput" type="file" accept="application/pdf" style="display: none" @change="onPick" />
+        <input ref="fileInput" type="file" accept="application/pdf,.pdf" hidden @change="onPick" />
       </div>
     </div>
-
-    <div v-if="loading" class="card muted">加载中…</div>
-    <div v-else-if="papers.length === 0" class="empty">
-      文献库为空。点击「加载示例论文」即可载入两篇示例并体验完整流程，或点击「上传 PDF」导入自己的论文。
+    <BibliographyImport v-if="bibliographyOpen" @changed="refresh(0)" />
+    <div v-if="loadError" class="library-error" role="alert">
+      {{ loadError }} <button class="el-button" @click="refresh()">重新加载</button>
     </div>
-
-    <template v-else>
-      <!-- 统计 -->
-      <div class="lib-stats">
-        <div class="lib-stat">
-          <div class="lib-stat-top">
-            <span class="lib-stat-label">文献总数</span>
-            <span class="lib-stat-ico" style="background:#eef3ff;color:#0a59f7">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-            </span>
-          </div>
-          <div class="lib-stat-val">{{ papers.length }}</div>
-          <div class="lib-stat-trend">解析中 {{ processingCount }} 篇</div>
-        </div>
-        <div class="lib-stat">
-          <div class="lib-stat-top">
-            <span class="lib-stat-label">总页数</span>
-            <span class="lib-stat-ico" style="background:#f0ebff;color:#7c3aed">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
-            </span>
-          </div>
-          <div class="lib-stat-val">{{ totalPages }}</div>
-          <div class="lib-stat-trend">平均每篇 {{ papers.length ? (totalPages / papers.length).toFixed(1) : 0 }} 页</div>
-        </div>
-        <div class="lib-stat">
-          <div class="lib-stat-top">
-            <span class="lib-stat-label">已解析</span>
-            <span class="lib-stat-ico" style="background:#ecfdf5;color:#10b981">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
-            </span>
-          </div>
-          <div class="lib-stat-val">{{ parsedCount }}</div>
-          <div class="lib-stat-trend">完成解析与索引</div>
-        </div>
-        <div class="lib-stat">
-          <div class="lib-stat-top">
-            <span class="lib-stat-label">引用连边</span>
-            <span class="lib-stat-ico" style="background:#e6faf6;color:#0d9488">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>
-            </span>
-          </div>
-          <div class="lib-stat-val">{{ edgeCount }}</div>
-          <div class="lib-stat-trend">局域图谱已生成</div>
-        </div>
+    <div class="library-stats" aria-label="文献统计">
+      <span
+        ><strong>{{ libraryCount }}</strong> 篇文献</span
+      ><span>·</span><span>{{ parsedCount }} 篇已解析</span><span>·</span
+      ><span>{{ totalPages }} 页 · {{ edgeCount }} 条已匹配引用记录</span>
+    </div>
+    <div class="lib-toolbar">
+      <label class="lib-search">
+        <Search :size="16" /><input
+          v-model="keyword"
+          aria-label="搜索文献"
+          placeholder="搜索文献、作者…"
+        />
+      </label>
+      <select v-model="statusFilter" class="lib-select" aria-label="按解析状态筛选">
+        <option value="all">全部状态</option>
+        <option value="parsed">已解析</option>
+        <option value="processing">解析中</option>
+        <option value="needs_ocr">待 OCR</option>
+        <option value="failed">解析失败</option>
+        <option value="metadata_only">仅书目 · 无全文</option>
+      </select>
+      <select v-model="sortKey" class="lib-select" aria-label="文献排序">
+        <option value="recent">最近导入</option>
+        <option value="pages">页数最多</option>
+        <option value="title">标题排序</option>
+      </select>
+    </div>
+    <div v-if="loading" class="empty" role="status">正在读取文献库…</div>
+    <div v-else-if="!libraryCount && !loadError" class="library-empty">
+      <BookOpen :size="36" :stroke-width="1.3" />
+      <h2>让研究从一篇文献开始</h2>
+      <p>上传 PDF 后即可阅读原文、检索证据并提问，也可以先加载示例论文体验。</p>
+      <button
+        class="el-button el-button--primary"
+        :disabled="uploading"
+        @click="fileInput?.click()"
+      >
+        导入第一篇文献
+      </button>
+    </div>
+    <div v-else-if="!filtered.length && !loadError" class="empty">
+      没有匹配的论文，试试调整关键词或筛选条件。
+    </div>
+    <div v-else-if="filtered.length" class="library-table-wrap">
+      <table class="library-table">
+        <thead>
+          <tr>
+            <th class="selection-cell">
+              <input
+                type="checkbox"
+                aria-label="全选当前文献"
+                :checked="allVisibleSelected"
+                :indeterminate="someVisibleSelected && !allVisibleSelected"
+                @change="toggleVisible"
+              />
+            </th>
+            <th>文献名称</th>
+            <th class="date-cell">导入日期</th>
+            <th>状态</th>
+            <th class="pages-cell">页数</th>
+            <th><span class="sr-label">文献操作</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="p in filtered" :key="p.id" :class="{ selected: selected.has(p.id) }">
+            <td class="selection-cell">
+              <input
+                type="checkbox"
+                :aria-label="`选择 ${p.title}`"
+                :checked="selected.has(p.id)"
+                @change="togglePaper(p.id)"
+              />
+            </td>
+            <td class="paper-cell">
+              <div class="pdf-icon" aria-hidden="true">{{ p.status === 'metadata_only' ? '书目' : librarySourceTypeLabel(p) }}</div>
+              <div class="paper-info">
+                <button class="paper-title" :disabled="!!openingPaper" @click="openPaper(p)">
+                  {{ p.title }}
+                </button>
+                <div v-if="p.authors" class="paper-authors">{{ p.authors }}</div>
+                <div v-if="p.error" class="paper-error">{{ p.error }}</div>
+                <LibraryIndexVersions v-if="fixedVersions[p.id]" :paper-id="p.id" :conversation-id="activeConversationId" @open="openPaper(p,false,$event)" @changed="refresh()" />
+              </div>
+            </td>
+            <td class="paper-date date-cell">{{ fmtDate(p.created_at) }}</td>
+            <td>
+              <span class="paper-status" :class="statusBadge(p).cls"
+                ><i></i>{{ statusBadge(p).text }}</span
+              >
+            </td>
+            <td class="paper-number pages-cell">{{ p.page_count || '—' }}</td>
+            <td>
+              <div class="paper-actions">
+                <button v-if="p.status!=='metadata_only'" class="retry-button" @click="showFixedVersions(p)">固定版本</button>
+                <button
+                  class="paper-action"
+                  :aria-label="`阅读 ${p.title}`"
+                  title="阅读原文"
+                  @click="openPaper(p)"
+                >
+                  <ArrowUpRight :size="15" />
+                </button>
+                <button
+                  class="paper-action"
+                  :aria-label="`针对 ${p.title} 提问`"
+                  title="针对文献提问"
+                  @click="openPaper(p, true)"
+                >
+                  <SquarePen :size="15" />
+                </button>
+                <button
+                  v-if="p.status === 'needs_ocr' || p.status === 'failed'"
+                  class="retry-button"
+                  :disabled="reparsing[p.id]"
+                  @click="reparse(p)"
+                >
+                  {{ reparsing[p.id] ? '解析中…' : '重新解析' }}
+                </button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <nav v-if="matchedCount" class="library-pagination" aria-label="文献分页">
+      <button class="el-button" :disabled="loading || offset===0" @click="refresh(Math.max(0,offset-pageSize))">上一页文献</button>
+      <span>第 {{offset+1}}–{{offset+papers.length}} 篇，共 {{matchedCount}} 篇</span>
+      <button class="el-button" :disabled="loading || nextOffset===null" @click="nextOffset!==null && refresh(nextOffset)">下一页文献</button>
+    </nav>
+    <div v-if="libraryCount" class="library-footer">
+      <span
+        >已选择 {{ selected.size }} 篇<template v-if="keyword || statusFilter !== 'all'">
+          · 当前筛选 {{ matchedCount }} 篇</template
+        ></span
+      >
+      <div class="toolbar">
+        <button v-if="selected.size" class="el-button" @click="selected=new Set()">清除跨页选择</button>
+        <button class="el-button" :disabled="selected.size < 2" @click="openComparison">
+          <ChartNoAxesCombined :size="14" />跨文献对比</button
+        ><button class="el-button" @click="router.push('/graph')">
+          <Network :size="15" />查看图谱
+        </button>
       </div>
-
-      <!-- 工具栏 -->
-      <div class="lib-toolbar">
-        <div class="lib-search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input v-model="keyword" placeholder="搜索标题、作者、关键词…" />
-        </div>
-        <select v-model="statusFilter" class="lib-select">
-          <option value="all">全部状态</option>
-          <option value="parsed">已解析</option>
-          <option value="processing">解析中</option>
-          <option value="failed">解析失败</option>
-        </select>
-        <select v-model="sortKey" class="lib-select">
-          <option value="recent">最近导入</option>
-          <option value="pages">页数最多</option>
-          <option value="title">标题排序</option>
-        </select>
-      </div>
-
-      <!-- 卡片网格 -->
-      <div v-if="filtered.length === 0" class="empty">没有匹配的论文，试试调整关键词或筛选条件。</div>
-      <div v-else class="lib-grid">
-        <div v-for="p in filtered" :key="p.id" class="lib-paper">
-          <div class="lib-cover" :style="{ background: `linear-gradient(135deg, ${cover(p.id)[0]}, ${cover(p.id)[1]})` }">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
-            <span class="lib-pill" :class="statusBadge(p).cls">{{ statusBadge(p).text }}</span>
-          </div>
-          <div class="lib-body">
-            <div class="lib-title">{{ p.title }}</div>
-            <div v-if="p.authors" class="lib-authors">{{ p.authors }}</div>
-            <div v-if="p.abstract" class="lib-abstract">{{ p.abstract }}</div>
-            <div v-if="p.error" class="lib-error">{{ p.error }}</div>
-            <div class="lib-meta">
-              <span>{{ p.page_count }} 页</span>
-              <span class="lib-dot"></span>
-              <span>{{ fmtDate(p.created_at) }} 导入</span>
-            </div>
-            <div class="lib-actions">
-              <button class="lib-pa primary" @click="router.push(`/reader/${p.id}`)">阅读</button>
-              <button class="lib-pa" @click="router.push({ path: '/chat', query: { paper: p.id } })">提问</button>
-              <button class="lib-pa" @click="router.push('/graph')">图谱</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </template>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.lib-stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-  margin-bottom: 18px;
+.library-pagination { display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;margin:16px 0;font-size:12px; }
+.page-title,
+.page-desc {
+  margin-bottom: 0;
+  margin-top: 0;
 }
-.lib-stat {
-  background: var(--fn-bg-primary);
-  border: 1px solid var(--fn-border-primary);
-  border-radius: var(--fn-radius-lg);
-  padding: 14px 16px;
-  box-shadow: var(--fn-shadow-sm);
-}
-.lib-stat-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.lib-stat-label {
-  font-size: 12.5px;
-  color: var(--fn-text-tertiary);
-}
-.lib-stat-ico {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.lib-stat-ico svg {
-  width: 16px;
-  height: 16px;
-}
-.lib-stat-val {
-  font-size: 23px;
-  font-weight: 700;
+.page-desc {
   margin-top: 8px;
-  letter-spacing: -0.02em;
 }
-.lib-stat-trend {
-  font-size: 11.5px;
-  margin-top: 2px;
-  color: var(--fn-text-tertiary);
+.toolbar .el-button {
+  gap: 7px;
+}
+.library-stats {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  margin-bottom: 26px;
+}
+.library-stats strong {
+  font-size: 15px;
+  color: var(--fn-text-primary);
+  font-weight: 600;
+  margin-right: 3px;
 }
 .lib-toolbar {
   display: flex;
-  gap: 10px;
-  margin-bottom: 18px;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--fn-border-primary);
+  border-bottom: 1px solid var(--fn-border-primary);
 }
 .lib-search {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  background: var(--fn-bg-primary);
-  border: 1px solid var(--fn-border-primary);
-  border-radius: 10px;
-  padding: 0 13px;
-}
-.lib-search svg {
-  width: 16px;
-  height: 16px;
-  color: var(--fn-text-tertiary);
-  flex-shrink: 0;
-}
-.lib-search input {
-  border: none;
-  outline: none;
-  flex: 1;
-  font-size: 13.5px;
-  background: transparent;
-}
-.lib-select {
-  height: 38px;
-  background: var(--fn-bg-primary);
-  border: 1px solid var(--fn-border-primary);
-  border-radius: 10px;
-  padding: 0 12px;
-  font-size: 13px;
-  color: var(--fn-text-secondary);
-  cursor: pointer;
-  outline: none;
-}
-.lib-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
-.lib-paper {
-  background: var(--fn-bg-primary);
-  border: 1px solid var(--fn-border-primary);
-  border-radius: 14px;
-  overflow: hidden;
-  box-shadow: var(--fn-shadow-sm);
-  transition: transform var(--fn-transition-fast), box-shadow var(--fn-transition-fast), border-color var(--fn-transition-fast);
-  display: flex;
-  flex-direction: column;
-}
-.lib-paper:hover {
-  border-color: var(--fn-brand);
-  box-shadow: var(--fn-shadow-md);
-  transform: translateY(-2px);
-}
-.lib-cover {
-  height: 84px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-}
-.lib-cover svg {
-  width: 40px;
-  height: 40px;
-  opacity: 0.92;
-}
-.lib-pill {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 9px;
-  border-radius: 20px;
-  border: 1px solid transparent;
-}
-.lib-pill.ok {
-  background: var(--fn-success-bg);
-  color: var(--fn-success);
-  border-color: var(--fn-success-border);
-}
-.lib-pill.mock {
-  background: var(--fn-warning-bg);
-  color: var(--fn-warning-text);
-  border-color: var(--fn-warning-border);
-}
-.lib-pill.fail {
-  background: var(--fn-danger-bg);
-  color: var(--fn-danger);
-  border-color: var(--fn-danger-border);
-}
-.lib-body {
-  padding: 14px 16px 15px;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-.lib-title {
-  font-size: 14.5px;
-  font-weight: 600;
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.lib-authors {
-  font-size: 12px;
-  color: var(--fn-text-tertiary);
-  margin-top: 5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.lib-abstract {
-  font-size: 12.5px;
-  color: var(--fn-text-secondary);
-  line-height: 1.55;
-  margin-top: 9px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.lib-error {
-  font-size: 12px;
-  color: var(--fn-danger);
-  margin-top: 8px;
-}
-.lib-meta {
   display: flex;
   align-items: center;
   gap: 9px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--fn-border-primary);
-  font-size: 11.5px;
+  flex: 1;
+  min-width: 160px;
   color: var(--fn-text-tertiary);
 }
-.lib-dot {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--fn-text-quaternary);
+.lib-search input {
+  border: 0;
+  background: transparent;
+  width: 100%;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--fn-text-primary);
+  outline: none;
 }
-.lib-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 11px;
+.lib-search:focus-within {
+  box-shadow: 0 1px var(--fn-brand);
 }
-.lib-pa {
-  flex: 1;
-  height: 30px;
-  border: 1px solid var(--fn-border-primary);
+.lib-select {
   background: var(--fn-bg-primary);
-  border-radius: 8px;
-  font-size: 12px;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 6px;
+  padding: 7px 10px;
   color: var(--fn-text-secondary);
-  cursor: pointer;
+  font-size: 12px;
+}
+.library-table-wrap {
+  overflow-x: auto;
+}
+.library-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+.library-table th {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fn-text-tertiary);
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--fn-border-primary);
+  white-space: nowrap;
+}
+.library-table td {
+  padding: 20px 12px;
+  border-bottom: 1px solid var(--fn-border-primary);
+  vertical-align: middle;
+}
+.library-table tbody tr:hover {
+  background: var(--fn-bg-secondary);
+}
+.library-table .paper-cell {
+  min-width: 260px;
+  max-width: 620px;
+}
+.pdf-icon {
+  float: left;
+  margin: 2px 14px 0 0;
+  width: 29px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all var(--fn-transition-fast);
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 3px;
+  font:
+    8px ui-monospace,
+    monospace;
+  color: var(--fn-text-secondary);
+  flex-shrink: 0;
 }
-.lib-pa:hover {
-  border-color: var(--fn-brand);
+.paper-info {
+  overflow: hidden;
+}
+.paper-title {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+  color: var(--fn-text-primary);
+  font-size: 13px;
+  line-height: 1.65;
+  font-weight: 500;
+  cursor: pointer;
+}
+.paper-title:hover {
   color: var(--fn-brand);
 }
-.lib-pa.primary {
+.paper-authors,
+.paper-abstract {
+  margin-top: 5px;
+  color: var(--fn-text-secondary);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paper-abstract {
+  color: var(--fn-text-tertiary);
+  max-width: 560px;
+}
+.paper-error {
+  color: var(--fn-danger);
+  font-size: 12px;
+  margin-top: 6px;
+}
+.paper-number,
+.paper-date {
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.paper-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.paper-action {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fn-text-secondary);
+  cursor: pointer;
+}
+.paper-action:hover {
+  color: var(--fn-brand);
+  background: var(--fn-bg-active);
+}
+.retry-button {
+  border: 0;
+  background: transparent;
+  color: var(--fn-brand);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.library-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 0;
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+}
+.library-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 70px 24px;
+  color: var(--fn-text-secondary);
+}
+.library-empty svg {
+  color: var(--fn-brand);
+}
+.library-empty h2 {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--fn-text-primary);
+  margin: 20px 0 0;
+}
+.library-empty p {
+  font-size: 13px;
+  margin: 12px 0 24px;
+  max-width: 440px;
+  line-height: 1.8;
+}
+.library-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 16px;
+  background: var(--fn-danger-bg);
+  color: var(--fn-danger);
+}
+.sr-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+@media (max-width: 1000px) {
+  .lib-toolbar {
+    flex-wrap: wrap;
+  }
+  .lib-search {
+    min-width: 100%;
+  }
+  .library-table .date-cell,
+  .library-table .pages-cell {
+    display: none;
+  }
+  .pdf-icon {
+    display: none;
+  }
+}
+
+.library-table .selection-cell {
+  width: 28px;
+  padding-left: 0;
+  padding-right: 10px;
+}
+.selection-cell input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--fn-brand);
+  cursor: pointer;
+}
+.library-table tbody tr.selected {
   background: var(--fn-bg-brand-light);
-  border-color: transparent;
-  color: var(--fn-brand);
-  font-weight: 600;
 }
-@media (max-width: 1200px) {
-  .lib-grid { grid-template-columns: repeat(2, 1fr); }
-  .lib-stats { grid-template-columns: repeat(2, 1fr); }
+.paper-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--fn-text-secondary);
+  font-size: 11px;
+}
+.paper-status i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--fn-text-tertiary);
+}
+.paper-status.ok i {
+  background: var(--fn-success);
+}
+.paper-status.fail {
+  color: var(--fn-danger);
+}
+.paper-status.fail i {
+  background: var(--fn-danger);
+}
+.paper-status.mock i {
+  background: var(--fn-warning);
+}
+.library-footer {
+  margin-top: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--fn-border-primary);
+}
+.library-footer .el-button {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+.library-table th {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.library-table td {
+  padding-top: 22px;
+  padding-bottom: 22px;
+}
+.library-table .paper-cell {
+  min-width: 250px;
+}
+.lib-search {
+  max-width: 430px;
+  margin-right: auto;
 }
 @media (max-width: 760px) {
-  .lib-grid { grid-template-columns: 1fr; }
-  .lib-stats { grid-template-columns: 1fr; }
+  .library-footer {
+    flex-wrap: wrap;
+  }
+  .library-table .paper-cell {
+    min-width: 200px;
+  }
 }
 </style>

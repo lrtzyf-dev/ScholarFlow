@@ -224,6 +224,9 @@ def test_archive_api_scope_and_backup_download(source):
     response = client.post(target + '/archive', json={'revision': review['revision']})
     assert response.status_code == 200 and response.json()['status'] == 'removed', response.text
     assert client.get(target + '/archive-backup').content[:2] == b'PK'
+    history = client.get(target + '/archive-history')
+    assert history.status_code == 200 and history.json()['current_id'] == response.json()['archive_info']['id']
+    assert history.json()['snapshots'][0]['backup_valid'] is True
     assert client.get('/api/projects/other/worktrees/' + row['id'] + '/archive-backup').status_code == 404
 
 

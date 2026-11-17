@@ -69,6 +69,7 @@ def final_check(db: Session, answer: str, evidence: list[dict], llm=None) -> dic
     checks.append({
         "name": "论断引用完整性",
         "passed": gate_ok,
+        "status": "passed" if gate_ok else "failed",
         "detail": f"{gate['marked_claims']}/{gate['total_claims']} 个论断有有效引用；"
                   f"无效引用标记 {len(gate['invalid_markers'])} 个。",
         "data": gate,
@@ -81,17 +82,30 @@ def final_check(db: Session, answer: str, evidence: list[dict], llm=None) -> dic
 
     # 2. 引用语义审计
     audit = audit_answer(db, answer, evidence, llm=llm)
-    audit_ok = audit["passed"]
+    audit_status = audit.get("status")
+    if audit_status not in {"passed", "failed", "unverified"}:
+        if audit.get("verified", True) is False:
+            audit_status = "unverified"
+        else:
+            audit_status = "passed" if audit.get("passed") is True else "failed"
+    audit_ok = audit_status == "passed"
     checks.append({
         "name": "引用语义审计",
-        "passed": audit_ok,
-        "detail": f"模式：{audit['mode']}；不被证据支撑的论断 {len(audit['unsupported'])} 条。",
-        "data": {"mode": audit["mode"], "unsupported": audit["unsupported"]},
+        "passed": audit.get("passed", audit_ok),
+        "status": audit_status,
+        "detail": (f"模式：{audit['mode']}；不被证据支撑的论断 {len(audit['unsupported'])} 条；"
+                   f"需人工核对 {len(audit.get('unverified', []))} 条。"),
+        "data": {"mode": audit["mode"], "unsupported": audit["unsupported"],
+                 "unverified": audit.get("unverified", []),
+                 "verified": audit.get("verified", True)},
     })
-    if not audit_ok:
+    if audit_status == "failed":
         for u in audit["unsupported"][:6]:
             must_fix.append({"check": "引用语义审计",
                              "item": f"引用不支撑：{u.get('text','')[:50]}（{u.get('reason','')}）"})
+    for u in audit.get("unverified", [])[:6]:
+        must_fix.append({"check": "引用语义审计（需人工核对）",
+                         "item": f"需人工核对：{u.get('text','')[:50]}（{u.get('reason','')}）"})
 
     # 3. 引用-参考文献对应
     refmap = _reference_section(answer, evidence)
@@ -101,6 +115,7 @@ def final_check(db: Session, answer: str, evidence: list[dict], llm=None) -> dic
         checks.append({
             "name": "引用-参考文献对应",
             "passed": ref_ok,
+            "status": "passed" if ref_ok else "failed",
             "detail": f"文内 {len(refmap['in_text'])} 处、参考文献 {len(refmap['listed'])} 条；"
                       f"正文有但列表缺 {len(refmap['missing_in_list'])}；列表有但正文未引 {len(refmap['orphan_listed'])}。",
             "data": refmap,
@@ -111,6 +126,7 @@ def final_check(db: Session, answer: str, evidence: list[dict], llm=None) -> dic
         checks.append({
             "name": "引用-参考文献对应",
             "passed": True,
+            "status": "passed",
             "detail": "未检测到独立参考文献列表（答案可能直接以证据编号呈现）。",
             "data": refmap,
         })
@@ -122,6 +138,7 @@ def final_check(db: Session, answer: str, evidence: list[dict], llm=None) -> dic
     checks.append({
         "name": "关键文献覆盖",
         "passed": True,
+        "status": "passed",
         "detail": f"已引用 {coverage['cited_papers']}/{coverage['total_papers']} 篇检索到的论文；"
                   f"未引用 {len(coverage['uncited_papers'])} 篇（请确认是否确为无关）。",
         "data": coverage,
@@ -130,7 +147,14 @@ def final_check(db: Session, answer: str, evidence: list[dict], llm=None) -> dic
         must_fix.append({"check": "关键文献覆盖（提示）",
                          "item": f"检索到但未引用：《{t}》"})
 
-    passed = all(c["passed"] for c in checks)
-    return {"passed": passed, "checks": checks, "must_fix": must_fix,
-            "summary": ("全部检查通过，可以定稿导出。" if passed
-                        else f"有 {len(must_fix)} 项待处理，建议修复后再定稿。")}
+    statuses = {c.get("status", "passed" if c.get("passed") else "failed") for c in checks}
+    status = "failed" if "failed" in statuses else "unverified" if "unverified" in statuses else "passed"
+    passed = True if status == "passed" else False if status == "failed" else None
+    if status == "passed":
+        summary = "全部检查通过，可以定稿导出。"
+    elif status == "failed":
+        summary = f"有 {len(must_fix)} 项待处理，建议修复或人工核对后再定稿。"
+    else:
+        summary = f"有 {len(must_fix)} 项需人工核对，核对完成后再定稿。"
+    return {"passed": passed, "status": status, "checks": checks, "must_fix": must_fix,
+            "summary": summary}

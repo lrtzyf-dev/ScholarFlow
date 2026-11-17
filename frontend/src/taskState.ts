@@ -1,5 +1,12 @@
 import { computed, readonly, ref } from 'vue'
-import { listBackgroundTasks, listTaskHistory, type BackgroundTask, type TaskSnapshot, type Conversation } from './api'
+import { localSessionURL } from './localSession'
+import {
+  listBackgroundTasks,
+  listTaskHistory,
+  type BackgroundTask,
+  type TaskSnapshot,
+  type Conversation,
+} from './api'
 
 const tasks = ref<BackgroundTask[]>([])
 const conversations = ref<Conversation[] | null>(null)
@@ -18,10 +25,13 @@ let historyExpanded = false
 let historyGeneration = 0
 let snapshotHistoryCursor: string | null = null
 let historyEpoch: string | undefined
-export const isActiveTask = (task: { status: string; executing?: boolean }) => task.executing || ['pending', 'running'].includes(task.status)
+export const isActiveTask = (task: { status: string; executing?: boolean }) =>
+  task.executing || ['pending', 'running'].includes(task.status)
 const connection = ref<'connecting' | 'connected' | 'reconnecting' | 'polling'>('connecting')
 const loadError = ref('')
-const pendingApprovals = computed(() => tasks.value.reduce((sum, task) => sum + (task.approvals?.length || 0), 0))
+const pendingApprovals = computed(() =>
+  tasks.value.reduce((sum, task) => sum + (task.approvals?.length || 0), 0)
+)
 const runningTasks = computed(() => tasks.value.filter(isActiveTask).length)
 let version = 0
 let initialized = false
@@ -31,10 +41,13 @@ let transition: ((task: BackgroundTask) => void) | undefined
 function acceptSnapshot(payload: TaskSnapshot) {
   const snapshot = payload.tasks
   const previous = new Map(tasks.value.map((task) => [task.id, task.status]))
-  const changes = initialized ? snapshot.filter((task) =>
-    ['pending', 'running'].includes(previous.get(task.id) || '') &&
-    ['done', 'failed', 'cancelled', 'interrupted'].includes(task.status),
-  ) : []
+  const changes = initialized
+    ? snapshot.filter(
+        (task) =>
+          ['pending', 'running'].includes(previous.get(task.id) || '') &&
+          ['done', 'failed', 'cancelled', 'interrupted'].includes(task.status)
+      )
+    : []
   version += 1
   initialized = true
   tasks.value = snapshot
@@ -51,7 +64,8 @@ function acceptSnapshot(payload: TaskSnapshot) {
   olderTasks.value = olderTasks.value.map((task) => latest.get(task.id) || task)
   snapshotHistoryCursor = payload.next_cursor || null
   if (!historyExpanded) historyCursor.value = snapshotHistoryCursor
-  historyTotal.value = payload.history_total ?? snapshot.filter((task) => !isActiveTask(task)).length
+  historyTotal.value =
+    payload.history_total ?? snapshot.filter((task) => !isActiveTask(task)).length
   loadError.value = ''
   for (const task of changes) transition?.(task)
 }
@@ -118,18 +132,32 @@ function startTaskUpdates(onTransition: (task: BackgroundTask) => void) {
   transition = onTransition
   initialized = false
   let events: EventSource | null = null
-  if ('EventSource' in window) {
-    events = new EventSource('/api/tasks/events?conversation_mode=signal')
-    events.onopen = () => { connection.value = 'connected' }
-    events.onerror = () => { connection.value = 'reconnecting' }
-    events.addEventListener('tasks', (event) => {
-      try {
-        const payload = JSON.parse((event as MessageEvent).data)
-        if (Array.isArray(payload.tasks)) acceptSnapshot(payload)
-      } catch {
-        // Keep the last valid snapshot when a frame is malformed.
+  let stopped = false
+  let retry: ReturnType<typeof setTimeout> | undefined
+  async function connectEvents() {
+    try {
+      const url = await localSessionURL('/api/tasks/events?conversation_mode=signal', 'events')
+      if (stopped) return
+      events = new EventSource(url)
+      events.onopen = () => { connection.value = 'connected' }
+      events.onerror = () => {
+        events?.close()
+        connection.value = 'reconnecting'
+        if (!stopped) retry = setTimeout(() => { void connectEvents() }, 2000)
       }
-    })
+      events.addEventListener('tasks', event => {
+        try {
+          const payload = JSON.parse((event as MessageEvent).data)
+          if (Array.isArray(payload.tasks)) acceptSnapshot(payload)
+        } catch { /* Keep the last valid snapshot when a frame is malformed. */ }
+      })
+    } catch {
+      connection.value = 'reconnecting'
+      if (!stopped) retry = setTimeout(() => { void connectEvents() }, 5000)
+    }
+  }
+  if ('EventSource' in window) {
+    void connectEvents()
   } else {
     connection.value = 'polling'
   }
@@ -138,6 +166,8 @@ function startTaskUpdates(onTransition: (task: BackgroundTask) => void) {
     if (connection.value !== 'connected') void refreshTasks()
   }, 10000)
   return () => {
+    stopped = true
+    clearTimeout(retry)
     events?.close()
     window.clearInterval(timer)
     transition = undefined
@@ -148,8 +178,19 @@ function startTaskUpdates(onTransition: (task: BackgroundTask) => void) {
 export const taskState = {
   conversationVersion: readonly(conversationVersion),
   conversations: readonly(conversations),
-  tasks: readonly(tasks), connection: readonly(connection), loadError: readonly(loadError),
-  allTasks, historyCursor: readonly(historyCursor), historyTotal: readonly(historyTotal),
-  historyLoading: readonly(historyLoading), historyError: readonly(historyError),
-  pendingApprovals, runningTasks, refreshTasks, reloadTasks, loadMoreHistory, resetTaskHistory, startTaskUpdates,
+  tasks: readonly(tasks),
+  connection: readonly(connection),
+  loadError: readonly(loadError),
+  allTasks,
+  historyCursor: readonly(historyCursor),
+  historyTotal: readonly(historyTotal),
+  historyLoading: readonly(historyLoading),
+  historyError: readonly(historyError),
+  pendingApprovals,
+  runningTasks,
+  refreshTasks,
+  reloadTasks,
+  loadMoreHistory,
+  resetTaskHistory,
+  startTaskUpdates,
 }

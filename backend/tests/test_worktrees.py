@@ -8,9 +8,11 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import worktrees as wt, workspace, git_process, run_store, terminal_sessions
+from app.agent import loop as agent_loop
 from app.db import SessionLocal
 from app.main import app
 from app.models import ManagedWorktree, Conversation, Project, TaskRecord
+from app.llm import LLMResponse
 from tests.test_git_operations import repo, git
 
 
@@ -26,6 +28,162 @@ def source(repo, tmp_path, monkeypatch):
 
 def create(scope, **kw):
     return wt.create(scope['project_id'], wt.Create(**{'request_id': 'worktree_001', 'name': '独立工作区 😀', **kw}))
+
+
+def test_agent_worktree_tools_list_and_create_with_idempotent_request(source, db):
+    from app.agent.tools import execute_tool
+
+    listed = json.loads(execute_tool(db, 'list_project_worktrees', {}, project_scope=source[1]))
+    assert listed['source_project_id'] == source[1]['project_id']
+    assert listed['worktrees'] == []
+
+    request = {'request_id': 'agent_wt_001', 'name': '模型创建的工作树', 'ref': 'HEAD', 'branch': 'agent/preview'}
+    created = json.loads(execute_tool(db, 'create_project_worktree', request, project_scope=source[1]))
+    assert created['status'] == 'ready' and created['branch'] == 'agent/preview', created
+    repeated = json.loads(execute_tool(db, 'create_project_worktree', request, project_scope=source[1]))
+    assert repeated['id'] == created['id']
+    listed = json.loads(execute_tool(db, 'list_project_worktrees', {}, project_scope=source[1]))
+    assert [row['id'] for row in listed['worktrees']] == [created['id']]
+
+
+@pytest.mark.parametrize(('decision', 'expected_status'), [('approve', 'ready'), ('deny', None)])
+def test_agent_worktree_creation_uses_approval_and_never_creates_after_denial(
+    source, db, monkeypatch, decision, expected_status
+):
+    """模型创建工作树必须先暂停等审批；拒绝后不能产生目录或项目记录。"""
+    from app import approval_store
+
+    class WorktreeLLM:
+        def chat(self, messages, tools=None, **kwargs):
+            # 任务计划器的结构化响应；返回空步骤，主流程会使用确定性计划。
+            return LLMResponse(content='{"steps": []}')
+
+        def stream_chat(self, messages, tools=None):
+            if not any(m.get('role') == 'tool' for m in messages):
+                yield ('final', LLMResponse(content='', tool_calls=[
+                    {'id': 'wt-call', 'name': 'create_project_worktree', 'arguments': {
+                        'request_id': 'agent_wt_apv', 'name': '审批工作树', 'ref': 'HEAD',
+                    }}
+                ]))
+                return
+            yield ('final', LLMResponse(content='工作树审批流程已完成。'))
+
+    monkeypatch.setattr(agent_loop, 'get_llm', lambda: WorktreeLLM())
+    monkeypatch.setattr(agent_loop.settings, 'approval_mode', 'auto')
+    db.add(Conversation(id='agent-worktree-approval', project_id=source[1]['project_id']))
+    db.commit()
+    saved_workspace = workspace.capture(db, 'agent-worktree-approval', source[1]['project_id'], [])
+
+    events = []
+    generator = agent_loop.run_agent(
+        db, '创建一个隔离工作树', conversation_id='agent-worktree-approval',
+        workspace=saved_workspace,
+    )
+    for kind, event in generator:
+        events.append((kind, event))
+        if kind == 'approval_request':
+            assert event['tool_name'] == 'create_project_worktree'
+            assert event['risk'] == 'guarded'
+            assert approval_store.resolve(event['approval_id'], decision, 'once')
+
+    result_events = [event for kind, event in events if kind == 'tool_result'
+                     and event.get('name') == 'create_project_worktree']
+    assert result_events, [kind for kind, _ in events]
+    assert any(kind == 'approval_request' for kind, _ in events)
+    assert any(kind == 'approval_result' and event['decision'] == decision
+               for kind, event in events)
+
+    listing = wt.listing(source[1]['project_id'])
+    if expected_status:
+        assert len(listing['worktrees']) == 1
+        assert listing['worktrees'][0]['status'] == expected_status
+    else:
+        assert listing['worktrees'] == []
+        assert 'denied_by_user' in result_events[0]['preview']
+
+
+def test_agent_worktree_review_remove_restore_and_archive_tools(source, db):
+    """模型工具必须复用持久审阅 revision，且归档恢复保留工作文件。"""
+    from app.agent.tools import execute_tool
+
+    row = create(source[1])
+    review = json.loads(execute_tool(db, 'review_project_worktree_removal',
+                                     {'worktree_id': row['id']}, project_scope=source[1]))
+    assert review['removal_snapshot']['head'] == row['base_head']
+    removed = json.loads(execute_tool(db, 'remove_project_worktree', {
+        'worktree_id': row['id'], 'revision': review['revision']}, project_scope=source[1]))
+    assert removed['status'] == 'removed' and not Path(row['path']).exists()
+    assert json.loads(execute_tool(db, 'remove_project_worktree', {
+        'worktree_id': row['id'], 'revision': review['revision']}, project_scope=source[1]))['status'] == 'removed'
+    restored = json.loads(execute_tool(db, 'restore_project_worktree', {
+        'worktree_id': row['id'], 'revision': removed['revision']}, project_scope=source[1]))
+    assert restored['status'] == 'ready' and Path(row['path']).exists()
+
+    archive_row = wt.create(source[1]['project_id'], wt.Create(
+        request_id='agent_archive_001', name='模型归档工作树', ref='HEAD'))
+    archive_path = Path(archive_row['path'])
+    (archive_path / 'draft.txt').write_text('keep this draft')
+    archive_review = json.loads(execute_tool(db, 'review_project_worktree_archive', {
+        'worktree_id': archive_row['id']}, project_scope=source[1]))
+    assert archive_review['removal_snapshot']['kind'] == 'archive'
+    archived = json.loads(execute_tool(db, 'archive_project_worktree', {
+        'worktree_id': archive_row['id'], 'revision': archive_review['revision']}, project_scope=source[1]))
+    assert archived['status'] == 'removed' and archived['archive_info']['phase'] == 'removed'
+    restored_archive = json.loads(execute_tool(db, 'restore_project_worktree', {
+        'worktree_id': archive_row['id'], 'revision': archived['revision']}, project_scope=source[1]))
+    assert restored_archive['status'] == 'ready'
+    assert (Path(archive_row['path']) / 'draft.txt').read_text() == 'keep this draft'
+
+
+@pytest.mark.parametrize(('decision', 'expected_status'), [('approve', 'removed'), ('deny', 'ready')])
+def test_agent_worktree_removal_requires_approval_after_model_review(
+    source, db, monkeypatch, decision, expected_status
+):
+    """Agent 先生成移除审阅，再对真正的目录删除请求审批；拒绝不改变工作树。"""
+    from app import approval_store
+
+    row = create(source[1])
+    class RemovalLLM:
+        def chat(self, messages, tools=None, **kwargs):
+            return LLMResponse(content='{"steps": []}')
+
+        def stream_chat(self, messages, tools=None):
+            tool_messages = [m for m in messages if m.get('role') == 'tool']
+            if not tool_messages:
+                yield ('final', LLMResponse(content='', tool_calls=[
+                    {'id': 'review-call', 'name': 'review_project_worktree_removal',
+                     'arguments': {'worktree_id': row['id']}}
+                ]))
+                return
+            if len(tool_messages) == 1:
+                reviewed = json.loads(tool_messages[0]['content'])
+                yield ('final', LLMResponse(content='', tool_calls=[
+                    {'id': 'remove-call', 'name': 'remove_project_worktree',
+                     'arguments': {'worktree_id': row['id'], 'revision': reviewed['revision']}}
+                ]))
+                return
+            yield ('final', LLMResponse(content='工作树处理结果已记录。'))
+
+    monkeypatch.setattr(agent_loop, 'get_llm', lambda: RemovalLLM())
+    monkeypatch.setattr(agent_loop.settings, 'approval_mode', 'auto')
+    db.add(Conversation(id='agent-worktree-remove', project_id=source[1]['project_id']))
+    db.commit()
+    saved_workspace = workspace.capture(db, 'agent-worktree-remove', source[1]['project_id'], [])
+
+    events = []
+    for kind, event in agent_loop.run_agent(
+        db, '移除这个托管工作树', conversation_id='agent-worktree-remove', workspace=saved_workspace
+    ):
+        events.append((kind, event))
+        if kind == 'approval_request':
+            assert event['tool_name'] == 'remove_project_worktree'
+            assert approval_store.resolve(event['approval_id'], decision, 'once')
+
+    assert any(kind == 'approval_request' for kind, _ in events)
+    assert any(kind == 'approval_result' and event['decision'] == decision
+               for kind, event in events)
+    assert wt.detail(source[1]['project_id'], row['id'])['status'] == expected_status
+    assert Path(row['path']).exists() is (decision == 'deny')
 
 
 def test_real_creation_isolated_files_index_and_idempotency(source):

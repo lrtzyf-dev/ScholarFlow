@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from . import git_process, project_git as git, workspace, workspace_write
 from .db import SessionLocal
 from .models import GitOperation
+from .timeutil import utcnow
 
 _guard = threading.RLock()
 _active = threading.Event()
@@ -262,7 +263,7 @@ def cancel_agent_pending(owner):
         cancelled = []
         for row in db.query(GitOperation).filter_by(status='prepared').all():
             if row.agent_owner == owner:
-                row.status = 'cancelled'; row.revision += 1; row.updated_at = datetime.utcnow()
+                row.status = 'cancelled'; row.revision += 1; row.updated_at = utcnow()
                 row.error = '发起此操作的任务已停止，未执行 Git 写入；如仍需操作，请重新生成审阅。'
                 cancelled.append(summary(row))
         db.commit()
@@ -301,7 +302,7 @@ def decide(project_id, operation_id, revision, *, cancel=False, agent_owner=None
         if row.revision != revision:
             workspace.fail('Git 操作已变化，请重新打开审阅', 409)
         if cancel:
-            row.status = 'cancelled'; row.revision += 1; row.updated_at = datetime.utcnow()
+            row.status = 'cancelled'; row.revision += 1; row.updated_at = utcnow()
             db.commit()
             return summary(row, detail=True)
         _active.set()
@@ -312,7 +313,7 @@ def decide(project_id, operation_id, revision, *, cancel=False, agent_owner=None
                 with _pinned(row.scope, row.paths) as root:
                     if _snapshot(row.scope, root, row.action, row.paths) != row.snapshot:
                         workspace.fail('Git 内容或分支已变化，请刷新并重新生成审阅', 409)
-                    row.status = 'running'; row.revision += 1; row.updated_at = datetime.utcnow(); db.commit()
+                    row.status = 'running'; row.revision += 1; row.updated_at = utcnow(); db.commit()
                     code, row.output = _execute(root, row)
                     row.status = 'applied' if code == 0 else 'failed'
                     if code:
@@ -328,7 +329,7 @@ def decide(project_id, operation_id, revision, *, cancel=False, agent_owner=None
             except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
                 row.status = 'interrupted'
                 row.error = 'Git 操作中断或超时，结果可能已写入；请刷新核对，系统不会自动重放。' + str(exc)[:500]
-            row.revision += 1; row.updated_at = datetime.utcnow(); db.commit()
+            row.revision += 1; row.updated_at = utcnow(); db.commit()
             return summary(row, detail=True)
         finally:
             _active.clear()
@@ -337,11 +338,11 @@ def decide(project_id, operation_id, revision, *, cancel=False, agent_owner=None
 def recover_interrupted():
     with _guard, SessionLocal() as db:
         for row in db.query(GitOperation).filter_by(status='running').all():
-            row.status = 'interrupted'; row.revision += 1; row.updated_at = datetime.utcnow()
+            row.status = 'interrupted'; row.revision += 1; row.updated_at = utcnow()
             row.error = '上次进程在 Git 执行期间退出，结果未确认。请核对仓库，系统不会自动重放。'
         for row in db.query(GitOperation).filter_by(status='prepared').all():
             if row.agent_owner:
-                row.status = 'cancelled'; row.revision += 1; row.updated_at = datetime.utcnow()
+                row.status = 'cancelled'; row.revision += 1; row.updated_at = utcnow()
                 row.error = '上次任务等待审批时退出，原审批已失效；请重新生成审阅。'
         db.commit()
 

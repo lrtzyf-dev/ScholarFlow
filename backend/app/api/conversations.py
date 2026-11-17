@@ -12,12 +12,14 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import Conversation, ConversationMemory, DeletedConversation, DesktopState, ForegroundRun, QARecord, TaskRecord
+from ..models import Conversation, ConversationMemory, ConversationOptions, DeletedConversation, DesktopState, ForegroundRun, QARecord, TaskRecord
 from .. import conversation_memory
 from ..conversation_store import materialize_history, ordered_pins
 from ..conversation_activity import conversation_summaries
 from ..conversation_query import InvalidCursor, query_conversations
 from .. import run_store, task_events, task_runner
+from ..timeutil import utcnow
+from ..runtime_context import bind_runtime_config, public_runtime_config
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -53,12 +55,14 @@ def list_all(scope: Literal["active", "archived", "all"] = "active", db: Session
 
 @router.get("/page")
 def page(scope: Literal["active", "archived", "all"] = "active",
+         project_scope: Literal["all", "unassigned"] = "all",
          q: str = Query(default="", max_length=200),
          sort: Literal["updated_at", "created_at", "sidebar_updated_at", "sidebar_created_at"] = "updated_at",
          limit: int = Query(default=40, ge=1, le=100),
          cursor: str | None = Query(default=None, max_length=2048), db: Session = Depends(get_db)):
     try:
-        return query_conversations(db, scope=scope, q=q, sort=sort, limit=limit, cursor=cursor)
+        return query_conversations(db, scope=scope, q=q, sort=sort, limit=limit, cursor=cursor,
+                                   project_scope=project_scope)
     except InvalidCursor as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -67,11 +71,13 @@ class LookupRequest(BaseModel):
     ids: list[str] = Field(max_length=100)
     scope: Literal["active", "archived", "all"] = "all"
     q: str = Field(default="", max_length=200)
+    project_scope: Literal["all", "unassigned"] = "all"
 
 
 @router.post("/lookup")
 def lookup(req: LookupRequest, db: Session = Depends(get_db)):
-    return query_conversations(db, ids=req.ids, scope=req.scope, q=req.q, limit=100)
+    return query_conversations(db, ids=req.ids, scope=req.scope, q=req.q, limit=100,
+                               project_scope=req.project_scope)
 
 
 @router.get("/{conversation_id}/activity")
@@ -85,7 +91,7 @@ def summary(conversation_id: str, db: Session = Depends(get_db)):
 def _require_idle(db: Session, cid: str, action: str):
     from ..workspace_transfers import require_conversation_available
     require_conversation_available(db, cid)
-    cutoff = datetime.utcnow() - timedelta(seconds=20)
+    cutoff = utcnow() - timedelta(seconds=20)
     stale_runs = db.query(ForegroundRun).filter(
         ForegroundRun.conversation_id == cid,
         ForegroundRun.status == "running", ForegroundRun.heartbeat_at < cutoff,
@@ -93,7 +99,7 @@ def _require_idle(db: Session, cid: str, action: str):
     for run in stale_runs:
         run.status = "interrupted"
         run.error = "前台连接已中断，保留了最后保存的部分回答。"
-        run.updated_at = datetime.utcnow()
+        run.updated_at = utcnow()
         run.heartbeat_at = run.updated_at
         run.revision += 1
     db.flush()
@@ -146,7 +152,7 @@ def archive(conversation_id: str, req: ArchiveRequest, db: Session = Depends(get
                                       "current": _archive_state(conv)})
         if req.archived:
             _require_idle(db, conversation_id, "归档")
-            conv.archived_at = datetime.utcnow()
+            conv.archived_at = utcnow()
             conv.pinned_at = None
             conv.pin_position = None
         else:
@@ -173,7 +179,7 @@ def mark_read(conversation_id: str, req: ReadRequest, db: Session = Depends(get_
     ).all()]
     changed = db.query(QARecord).filter(
         QARecord.conversation_id == conversation_id, QARecord.id.in_(ids), QARecord.read_at.is_(None),
-    ).update({QARecord.read_at: datetime.utcnow()}, synchronize_session=False)
+    ).update({QARecord.read_at: utcnow()}, synchronize_session=False)
     db.commit()
     if changed:
         task_events.notify_tasks_changed()
@@ -190,6 +196,7 @@ PinId = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[\w-]+$")]
 class PinOrderRequest(BaseModel):
     conversation_ids: list[PinId] = Field(max_length=10000)
     expected_order: list[PinId] = Field(max_length=10000)
+    project_scope: Literal["all", "unassigned"] = "all"
 
     @model_validator(mode="after")
     def permutation(self):
@@ -203,14 +210,20 @@ class PinOrderRequest(BaseModel):
 def reorder_pins(req: PinOrderRequest, db: Session = Depends(get_db)):
     db.execute(text("BEGIN IMMEDIATE"))
     pins = ordered_pins(db)
-    current = [conv.id for conv in pins]
+    selected = [conv for conv in pins if req.project_scope == "all" or conv.project_id is None]
+    current = [conv.id for conv in selected]
     if req.conversation_ids == current:
         db.rollback()
         return {"conversation_ids": current}
     if req.expected_order != current:
         raise HTTPException(409, {"message": "固定会话已在其他窗口变更，请重新排序", "current_order": current})
     by_id = {conv.id: conv for conv in pins}
-    for position, cid in enumerate(req.conversation_ids):
+    # Reorder the visible subset in its existing slots; hidden project pins
+    # keep their global positions and remain intact in the all-history view.
+    replacements = iter(req.conversation_ids)
+    selected_ids = set(current)
+    merged = [next(replacements) if conv.id in selected_ids else conv.id for conv in pins]
+    for position, cid in enumerate(merged):
         by_id[cid].pin_position = position
     db.commit()
     task_events.notify_tasks_changed()
@@ -244,7 +257,7 @@ def pin(conversation_id: str, req: PinRequest, db: Session = Depends(get_db)):
     if req.pinned and not conv.pinned_at:
         for position, other in enumerate(ordered_pins(db), 1):
             other.pin_position = position
-        conv.pinned_at = datetime.utcnow()
+        conv.pinned_at = utcnow()
         conv.pin_position = 0
     elif not req.pinned:
         conv.pinned_at = None
@@ -282,7 +295,10 @@ def usage_summary_all(db: Session = Depends(get_db)):
 
 
 @router.get("/{conversation_id}")
-def detail(conversation_id: str, db: Session = Depends(get_db)):
+def detail(conversation_id: str, db: Session = Depends(get_db),
+           limit: int | None = Query(default=None,ge=1,le=100),
+           offset: int | None = Query(default=None,ge=0,le=1000000),
+           anchor: str | None = Query(default=None,max_length=64)):
     conv = db.get(Conversation, conversation_id)
     if conv is None:
         db.execute(text("BEGIN IMMEDIATE"))
@@ -298,21 +314,41 @@ def detail(conversation_id: str, db: Session = Depends(get_db)):
             title = _draft_title(draft) if draft else task.title if task else "已中断的回答"
             return {"id": conversation_id, "title": title, "messages": [], "draft_only": True}
         raise HTTPException(404, "会话不存在")
-    records = (
-        db.query(QARecord)
-        .filter(QARecord.conversation_id == conversation_id)
-        .order_by(QARecord.created_at.asc())
-        .all()
-    )
+    query=db.query(QARecord).filter(QARecord.conversation_id==conversation_id)
+    total=query.count()
+    start=0
+    ordered=query.order_by(QARecord.created_at.asc(),QARecord.id.asc())
+    if limit is not None:
+        start=max(0,total-limit) if offset is None else min(offset,max(0,total-1))
+        if anchor and offset is None:
+            from sqlalchemy import and_,or_
+            at=db.get(QARecord,anchor)
+            if at is not None and at.conversation_id==conversation_id:
+                prior=query.filter(or_(QARecord.created_at<at.created_at,and_(QARecord.created_at==at.created_at,QARecord.id<at.id))).count()
+                start=max(0,min(prior-limit//2,total-limit))
+        ordered=ordered.offset(start).limit(limit)
+    records=ordered.all()
+    # Resolve only the visible page, within this conversation. Copied history
+    # in a branch must not acquire edit access to its original task's goal.
+    from ..runtime_models import RuntimeRun
+    from ..goal_models import Goal
+    run_ids = {r.runtime_config.get("run_id") for r in records
+               if isinstance(r.runtime_config, dict) and isinstance(r.runtime_config.get("run_id"), str)}
+    goals = dict(db.query(RuntimeRun.id, Goal.id).join(Goal, Goal.id == RuntimeRun.goal_id).filter(
+        RuntimeRun.id.in_(run_ids), RuntimeRun.conversation_id == conversation_id,
+        Goal.conversation_id == conversation_id).all()) if run_ids else {}
     return {
         "id": conv.id,
         "title": conv.title,
         "project_id": conv.project_id,
         "workspace_revision": conv.workspace_revision or 0,
         **_archive_state(conv),
+        "history_window":{"total":total,"offset":start,"limit":limit,"previous_offset":max(0,start-(limit or total)) if start else None,
+            "next_offset":start+len(records) if start+len(records)<total else None},
         "messages": [
             {
                 "id": r.id,
+                "goal_id": goals.get((r.runtime_config or {}).get("run_id")),
                 "question": r.question,
                 "paper_id": r.paper_id,
                 "answer": r.answer,
@@ -322,6 +358,10 @@ def detail(conversation_id: str, db: Session = Depends(get_db)):
                 "plan_steps": r.plan_steps or [],
                 "plan_images": r.plan_images or [],
                 "file_paths": [f["path"] for f in (r.workspace or {}).get("files", [])],
+                "source_revision_ids": (r.runtime_config or {}).get("source_revision_ids", []),
+                "source_references": [{key: source.get(key) for key in (
+                    "source_id", "revision_id", "title", "media_type", "version", "document_format")}
+                    for source in (r.runtime_config or {}).get("source_bindings", [])],
                 "project_id": (r.workspace or {}).get("project_id"),
                 "workspace_revision": (r.workspace or {}).get("workspace_revision", 0),
                 "evidence": r.evidence or [],
@@ -331,12 +371,26 @@ def detail(conversation_id: str, db: Session = Depends(get_db)):
                 "refusal": r.refusal,
                 "latency_ms": r.latency_ms,
                 "usage": r.usage,
+                "runtime_config": public_runtime_config(r.runtime_config),
                 "read_at": r.read_at.isoformat() if r.read_at else None,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in records
         ],
     }
+
+
+class PlanClaimsRequest(BaseModel):
+    record_ids:list[str]=Field(min_length=1,max_length=100)
+
+
+@router.post("/{conversation_id}/plan-claims")
+def plan_claims(conversation_id:str,req:PlanClaimsRequest,db:Session=Depends(get_db)):
+    if db.get(DeletedConversation,conversation_id): raise HTTPException(410,"会话已删除")
+    if not db.get(Conversation,conversation_id): raise HTTPException(404,"会话不存在")
+    rows=db.query(QARecord.id,QARecord.plan_run_id).filter(QARecord.conversation_id==conversation_id,
+        QARecord.execution_mode=='plan',QARecord.id.in_(req.record_ids)).all()
+    return {'items':[{'id':rid,'plan_run_id':run_id} for rid,run_id in rows]}
 
 
 @router.get("/{conversation_id}/usage")
@@ -390,12 +444,19 @@ def compact_memory(conversation_id: str, req: CompactRequest, db: Session = Depe
         if conv and conv.archived_at:
             raise HTTPException(409, "请先恢复会话后更新摘要")
         _require_idle(db, conversation_id, "更新摘要")
+        from ..model_profiles import capture_run_config, ModelConfigurationError
+        try:
+            binding = capture_run_config(db, conversation_id)
+        except ModelConfigurationError as exc:
+            db.rollback()
+            raise HTTPException(exc.status_code, str(exc)) from exc
         db.commit()
         run_store.begin(run_id, conversation_id)
     status = "done"
     try:
-        return conversation_memory.compact(db.get_bind(), conversation_id, get_llm(), run_id=run_id,
-                                           force=req.force, expected_revision=req.expected_revision)
+        with bind_runtime_config(binding):
+            return conversation_memory.compact(db.get_bind(), conversation_id, get_llm(), run_id=run_id,
+                                               force=req.force, expected_revision=req.expected_revision)
     except conversation_memory.MemoryConflict as exc:
         status = "failed"
         raise HTTPException(409, str(exc)) from exc
@@ -427,7 +488,7 @@ def create(req: CreateRequest, db: Session = Depends(get_db)):
     from datetime import datetime
 
     cid = _new_id()
-    now = datetime.utcnow()
+    now = utcnow()
     if req.project_id:
         from ..workspace import get_project, root_path, project_scope
         root_path(project_scope(get_project(db, req.project_id)))
@@ -456,7 +517,7 @@ def rename(conversation_id: str, req: RenameRequest, db: Session = Depends(get_d
     conv.title = title[:200]
     from datetime import datetime
 
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = utcnow()
     db.commit()
     task_events.notify_tasks_changed()
     return {"id": conv.id, "title": conv.title}
@@ -466,25 +527,30 @@ def rename(conversation_id: str, req: RenameRequest, db: Session = Depends(get_d
 def delete(conversation_id: str, db: Session = Depends(get_db)):
     with run_store.coordinated():
         db.execute(text("BEGIN IMMEDIATE"))
+        if db.get(DeletedConversation, conversation_id):
+            return {"deleted": conversation_id, "already_deleted": True}
         _require_idle(db, conversation_id, "删除")
         conv = materialize_history(db, conversation_id)
         if conv is None and not _draft(db, conversation_id) and not _has_recoverable_run(db, conversation_id):
             raise HTTPException(404, "会话不存在")
+        from ..data_cleanup import remove
+        cleanup = remove(db, conversation_id)
         db.add(DeletedConversation(id=conversation_id))
-        db.query(QARecord).filter(QARecord.conversation_id == conversation_id).delete()
-        db.query(ConversationMemory).filter(ConversationMemory.conversation_id == conversation_id).delete()
-        db.query(TaskRecord).filter(TaskRecord.conversation_id == conversation_id).delete()
-        db.query(ForegroundRun).filter(ForegroundRun.conversation_id == conversation_id).delete()
-        db.query(DesktopState).filter(DesktopState.key == f"conversation:{conversation_id}").delete()
-        selection = db.get(DesktopState, "selection")
-        if selection and selection.value.get("conversation_id") == conversation_id:
-            selection.value = {"conversation_id": None}
-            selection.revision += 1
-        if conv is not None:
-            db.delete(conv)
         db.commit()
+        from ..chat_events import forget_conversation
+        forget_conversation(conversation_id)
     task_events.notify_tasks_changed()
-    return {"deleted": conversation_id}
+    return {"deleted": conversation_id, "cleanup": cleanup}
+
+
+@router.get("/{conversation_id}/deletion-preview")
+def deletion_preview(conversation_id: str, db: Session = Depends(get_db)):
+    if db.get(DeletedConversation, conversation_id):
+        raise HTTPException(410, "会话已删除")
+    if materialize_history(db, conversation_id) is None and not _draft(db, conversation_id) and not _has_recoverable_run(db, conversation_id):
+        raise HTTPException(404, "会话不存在")
+    from ..data_cleanup import preview
+    return preview(db, conversation_id)
 
 
 class ForkRequest(BaseModel):
@@ -502,7 +568,7 @@ def fork(conversation_id: str, req: ForkRequest, db: Session = Depends(get_db)):
     records = (
         db.query(QARecord)
         .filter(QARecord.conversation_id == conversation_id)
-        .order_by(QARecord.created_at.asc())
+        .order_by(QARecord.created_at.asc(), QARecord.id.asc())
         .all()
     )
     if req.after_message_id:
@@ -517,33 +583,52 @@ def fork(conversation_id: str, req: ForkRequest, db: Session = Depends(get_db)):
     from datetime import datetime
 
     new_id = _new_id()
-    now = datetime.utcnow()
+    now = utcnow()
     base_title = req.title or f"{src.title or '会话'}（分叉）"
     db.add(Conversation(id=new_id, title=base_title[:200], project_id=src.project_id,
                         workspace_revision=src.workspace_revision, created_at=now, updated_at=now))
+    source_options = db.get(ConversationOptions, conversation_id)
+    if source_options:
+        db.add(ConversationOptions(conversation_id=new_id, model_profile_id=source_options.model_profile_id,
+                                   approval_mode=source_options.approval_mode,
+                                   reasoning_effort=source_options.reasoning_effort, revision=1))
+    db.flush()  # Source ownership checks must see the new scoped conversation.
+    source_fork_cache = {}
     for r in records:
+        from ..source_forks import fork_record_sources, remap_plan_sources
+        from ..source_store import SourceError
+        try:
+            fork_runtime, fork_evidence = fork_record_sources(db, r, conversation_id, new_id, source_fork_cache)
+        except SourceError as exc:
+            db.rollback()
+            raise HTTPException(409, str(exc)) from None
+        copied_id = _new_qa_id()
         db.add(QARecord(
-            id=_new_qa_id(),
+            id=copied_id,
             conversation_id=new_id,
             paper_id=r.paper_id,
             question=r.question,
             answer=r.answer,
             execution_mode=r.execution_mode,
-            plan_steps=copy.deepcopy(r.plan_steps),
+            plan_steps=remap_plan_sources(copy.deepcopy(r.plan_steps), source_fork_cache),
             plan_images=copy.deepcopy(r.plan_images),
             workspace=copy.deepcopy(r.workspace),
             claims=copy.deepcopy(r.claims),
-            evidence=copy.deepcopy(r.evidence),
+            evidence=fork_evidence,
             trace=copy.deepcopy(r.trace),
             skills=copy.deepcopy(r.skills),
             refusal=r.refusal,
             latency_ms=r.latency_ms,
             in_memory=r.in_memory,
             usage=copy.deepcopy(r.usage),
+            runtime_config=fork_runtime,
+            provider_context=copy.deepcopy(r.provider_context),
             usage_origin_id=r.usage_origin_id or r.id,
             read_at=now,
             created_at=r.created_at,
         ))
+        from ..memory_governance import copy_item_policy
+        copy_item_policy(db, r.id, copied_id, new_id)
     db.commit()
     task_events.notify_tasks_changed()
     return {"id": new_id, "title": base_title[:200], "message_count": len(records)}

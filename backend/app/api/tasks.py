@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -17,6 +17,7 @@ from ..db import SessionLocal, get_db
 from .. import task_events, task_runner
 from ..conversation_store import ConversationArchived, ConversationDeleted
 from ..execution_mode import ExecutionOptions, PlanConflict
+from ..agent.paper_scope import PaperScopeError, describe as describe_paper_scope
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -34,12 +35,14 @@ def start(req: StartTaskRequest, db: Session = Depends(get_db)):
     if not req.question.strip():
         raise HTTPException(400, "问题不能为空")
     try:
+        describe_paper_scope(db, req.paper_id)
         return task_runner.start_agent_task(
             db, req.question, req.paper_id, req.skills,
             req.conversation_id, req.title,
             execution_mode=req.execution_mode, reviewed_plan_id=req.reviewed_plan_id, retry_plan_run_id=req.retry_plan_run_id,
             project_id=req.project_id, file_paths=req.file_paths,
             workspace_revision=req.workspace_revision,
+            source_revision_ids=req.source_revision_ids,
         )
     except ConversationDeleted as exc:
         raise HTTPException(410, str(exc)) from exc
@@ -47,6 +50,8 @@ def start(req: StartTaskRequest, db: Session = Depends(get_db)):
         raise HTTPException(409, str(exc)) from exc
     except PlanConflict as exc:
         raise HTTPException(409, str(exc)) from exc
+    except PaperScopeError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except task_runner.TaskConflict as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
 
@@ -115,12 +120,21 @@ def detail(task_id: str, db: Session = Depends(get_db)):
 
 class ResumeRequest(BaseModel):
     resolution: Literal["retry", "skip"] | None = None
+    additional_steps: int = Field(default=task_runner.DEFAULT_RESUME_STEPS, strict=True,
+                                  ge=1, le=task_runner.MAX_RESUME_STEPS)
+    resume_request_id: str | None = Field(default=None, min_length=1, max_length=96)
+    expected_run_revision: int | None = Field(default=None, strict=True, ge=1)
 
 
 @router.post("/{task_id}/resume")
 def resume(task_id: str, req: ResumeRequest | None = None, db: Session = Depends(get_db)):
     try:
-        task = task_runner.resume_task(db, task_id, req.resolution if req else None)
+        task = task_runner.resume_task(
+            db, task_id, req.resolution if req else None,
+            req.additional_steps if req else task_runner.DEFAULT_RESUME_STEPS,
+            resume_request_id=req.resume_request_id if req else None,
+            expected_run_revision=req.expected_run_revision if req else None,
+        )
     except ConversationDeleted as exc:
         raise HTTPException(410, str(exc)) from exc
     except ConversationArchived as exc:

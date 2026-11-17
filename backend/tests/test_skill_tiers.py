@@ -18,8 +18,8 @@ def test_disable_excludes_from_default_list():
     assert skill_store.load_skill(name).get("disabled") is True
     # 默认列表仍包含（带禁用标记），但 include_disabled=False 时排除
     assert all(s["name"] != name for s in skill_store.list_skills(False))
-    # 显式调用可绕过禁用
-    assert "content" in skill_store.load_skill(name, explicit=True)
+    # 显式选择不能撤销用户禁用决定。
+    assert skill_store.load_skill(name, explicit=True).get('disabled') is True
     skill_store.set_disabled(name, False)
 
 
@@ -52,8 +52,13 @@ def test_project_tier_overrides_builtin():
         encoding="utf-8",
     )
     loaded = skill_store.load_skill(builtin_name)
-    assert loaded["tier"] == "project"
-    assert loaded["content"] == "项目专属正文"
+    assert loaded['tier'] != 'project'
+    legacy = next(item for item in skill_store.legacy_skills() if item['name'] == builtin_name)
+    migrated = skill_store.migrate_legacy(builtin_name, legacy['revision'], project_id='project-a')
+    assert skill_store.load_skill(builtin_name, project_id='project-a').get('untrusted')
+    skill_store.trust_skill(builtin_name, migrated['revision'], project_id='project-a')
+    loaded = skill_store.load_skill(builtin_name, project_id='project-a')
+    assert loaded['tier'] == 'project' and loaded['content'] == '项目专属正文'
 
 
 def test_create_rejects_bad_name():

@@ -12,6 +12,8 @@ _lock = threading.RLock()
 _active: dict[str, str | None] = {}
 _finished: dict[str, tuple[float, str]] = {}
 _early_cancels: dict[str, float] = {}
+_active_attempts: dict[str, str | None] = {}
+_finished_attempts: dict[str, str | None] = {}
 
 
 def _prune() -> None:
@@ -23,6 +25,9 @@ def _prune() -> None:
                 records.pop(key, None)
         while len(records) > 1024:
             records.pop(next(iter(records)))
+    for run_id in tuple(_finished_attempts):
+        if run_id not in _finished:
+            _finished_attempts.pop(run_id, None)
 
 
 @contextmanager
@@ -32,12 +37,18 @@ def coordinated():
         yield
 
 
-def begin(run_id: str, conversation_id: str | None) -> bool:
+def begin(run_id: str, conversation_id: str | None, *, attempt_id: str | None = None) -> bool:
     with _lock:
         _prune()
-        if run_id in _active or run_id in _finished:
+        if run_id in _active:
             return False
+        previous = _finished.get(run_id)
+        if previous:
+            if previous[1] != "paused" and (not attempt_id or attempt_id == _finished_attempts.get(run_id)):
+                return False
+            _finished.pop(run_id, None)
         _active[run_id] = conversation_id
+        _active_attempts[run_id] = attempt_id
         cancel_store.clear(run_id)
         if _early_cancels.pop(run_id, None) is not None:
             cancel_store.request_cancel(run_id)
@@ -61,10 +72,13 @@ def cancel(run_id: str) -> str:
         return "cancelling"
 
 
-def finish(run_id: str, status: str) -> None:
+def finish(run_id: str, status: str, *, attempt_id: str | None = None) -> None:
     with _lock:
+        if attempt_id is not None and _active_attempts.get(run_id) != attempt_id:
+            return
         approval_store.discard_for_run(run_id)
         _active.pop(run_id, None)
+        _finished_attempts[run_id] = _active_attempts.pop(run_id, attempt_id)
         _finished[run_id] = (time.monotonic(), status)
         cancel_store.clear(run_id)
         _prune()

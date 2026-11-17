@@ -1,0 +1,27 @@
+# Windows AMD64 / CPython 3.14.3. Direct versions from the development runtime; clean-room acceptance required.
+fastapi==0.162.5
+uvicorn[standard]==0.54.0
+pydantic==2.13.4
+pydantic-settings==2.16.2
+sqlalchemy==2.0.49
+numpy==2.4.3
+httpx==0.28.1
+python-multipart==0.0.33
+mcp==2.3.0
+pdfplumber==0.11.9
+python-docx==1.2.0
+markdown-it-py==4.2.0
+latex2mathml==3.81.1
+openpyxl==3.1.5
+pywebview==6.2.1
+pywinpty==3.1.2; sys_platform == "win32"
+pypdfium2==5.8.0
+rapidocr-onnxruntime==1.2.3
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
+reportlab==5.1.0
+pyinstaller==6.22.3
+cryptography==50.0.2
+setuptools==81.0.0
+pip==25.3
+wheel==0.48.0

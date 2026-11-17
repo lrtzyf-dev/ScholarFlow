@@ -153,6 +153,14 @@ def test_tool_risk_classification():
     assert tool_risk("mcp__builtin__crossref_search") == "safe"
     assert tool_risk("mcp__builtin__web_fetch") == "guarded"
     assert tool_risk("import_paper_from_url") == "guarded"
+    assert tool_risk("list_project_worktrees") == "safe"
+    assert tool_risk("review_project_worktree_removal") == "safe"
+    assert tool_risk("review_project_worktree_archive") == "safe"
+    assert tool_risk("create_project_worktree") == "guarded"
+    assert tool_risk("remove_project_worktree") == "guarded"
+    assert tool_risk("archive_project_worktree") == "guarded"
+    assert tool_risk("restore_project_worktree") == "guarded"
+    assert tool_risk("reconcile_project_worktree") == "guarded"
     assert tool_risk("mcp__custom__anything") == "guarded"
 
 

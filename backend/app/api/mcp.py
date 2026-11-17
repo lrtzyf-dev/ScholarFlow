@@ -9,6 +9,26 @@ from ..mcp_bridge import bridge
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
 
+@router.get('/servers/{name}/authorization')
+def auth_status(name: str):
+    try:
+        return bridge.user_authorization(name)
+    except KeyError:
+        raise HTTPException(404, '连接不存在')
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post('/servers/{name}/authorization/{action}')
+def auth_action(name: str, action: str):
+    try:
+        return bridge.user_authorization(name, action)
+    except KeyError:
+        raise HTTPException(404, '连接不存在')
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 class ServerIn(BaseModel):
     name: str
     transport: str = "stdio"  # stdio | http
@@ -20,6 +40,9 @@ class ServerIn(BaseModel):
     cwd: str = ""
     # http
     url: str = ""
+    headers: dict[str, str] | None = None
+    bearer_token: str | None = None
+    oauth: dict[str, str] | None = None
 
 
 class NameIn(BaseModel):
@@ -38,7 +61,10 @@ def list_servers() -> dict:
 
 @router.put("/servers")
 def upsert_server(payload: ServerIn) -> dict:
-    cfg = payload.model_dump()
+    # Keep omitted credentials distinct from explicit empty values. An edit
+    # that does not include auth fields must preserve the saved credential;
+    # an explicit empty value clears it.
+    cfg = payload.model_dump(exclude_unset=True)
     try:
         return bridge.upsert_server(cfg)
     except ValueError as exc:

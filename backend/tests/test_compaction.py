@@ -62,6 +62,7 @@ class Model:
 
 
 def online(monkeypatch, model):
+    monkeypatch.setattr(settings, 'llm_demo_mode', False)
     monkeypatch.setattr(settings, 'llm_api_key', 'test-only')
     monkeypatch.setattr(settings, 'llm_base_url', 'http://127.0.0.1:1')
     monkeypatch.setattr('app.llm.get_llm', lambda: model)
@@ -274,7 +275,11 @@ def test_revision_conflict_fork_rebuild_archive_and_delete_accounting(db, monkey
     db.expire_all()
     assert db.get(ConversationMemory, 'c_long') is None
     assert client.get('/api/conversations/c_long/memory').status_code == 410
-    assert client.get('/api/conversations/usage/summary').json()['usage'] == before
+    # This endpoint projects retained local conversations, not the provider's
+    # billing history. Deletion removes c_long's compaction but keeps the fork.
+    assert client.get('/api/conversations/usage/summary').json()['usage'] == {
+        key: before[key] - value for key, value in
+        {'prompt_tokens': 100, 'completion_tokens': 30, 'total_tokens': 130}.items()}
 
 
 def test_scoped_history_tool_returns_original_evidence_for_current_run_numbering(db):

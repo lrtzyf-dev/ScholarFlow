@@ -26,6 +26,29 @@ def _stream(number, mode):
     return os.fdopen(fd, mode, buffering=0)
 
 
+def _open_pty(cols, rows, executable, arguments, cwd, env):
+    """优先使用 ConPTY；构造或 spawn 失败时自动回退到 WinPTY。
+
+    部分 Windows 环境下 ConPTY 会在 PTY 构造阶段抛出 WinptyError
+    （ERROR_INVALID_HANDLE），而传统 WinPTY 后端仍可正常工作，因此这里
+    做一次透明回退，保证内置终端在两类后端下都可用。
+    返回 (pty, backend_name)。
+    """
+    from winpty import PTY, WinptyError
+    from winpty.enums import Backend
+    last_error = None
+    for backend_name, backend in (('ConPTY', Backend.ConPTY), ('WinPTY', Backend.WinPTY)):
+        try:
+            candidate = PTY(cols, rows, backend=backend)
+            if not candidate.spawn(str(executable), cmdline=arguments, cwd=cwd, env=env):
+                raise WinptyError('Cannot start terminal shell')
+            return candidate, backend_name
+        except WinptyError as exc:
+            last_error = exc
+            continue
+    raise WinptyError(f'终端后端均不可用：{last_error}')
+
+
 def main():
     source, sink = _stream(-10, 'rb'), _stream(-11, 'wb')
     commands = queue.Queue(maxsize=128)
@@ -54,18 +77,25 @@ def main():
             disconnected.set()
 
     try:
-        from winpty import PTY
-        from winpty.enums import Backend
+        from winpty import WinptyError
         from .terminal_sessions import ProcessJob, shell_command, shell_environment
+
+        def _alive(candidate):
+            # 进程结束后 isalive 也可能抛 WinptyError，统一视为已结束
+            try:
+                return candidate.isalive()
+            except WinptyError:
+                return False
+
         config = json.loads(source.readline(32769))
         executable, arguments = shell_command(config['shell'])
-        pty = PTY(config['cols'], config['rows'], backend=Backend.ConPTY)
-        if not pty.spawn(str(executable), cmdline=arguments, cwd=config['cwd'], env=shell_environment()):
-            raise OSError('Cannot start terminal shell')
+        pty, backend_name = _open_pty(
+            config['cols'], config['rows'], executable, arguments,
+            config['cwd'], shell_environment())
         job = ProcessJob(pty.pid)
         # The backend assigned this worker to its job BEFORE sending config;
         # the shell and all descendants also inherit that outer lifetime.
-        send('ready', pid=pty.pid)
+        send('ready', pid=pty.pid, backend=backend_name)
         threading.Thread(target=read_commands, daemon=True).start()
         quiet, heartbeat = 0, time.monotonic()
         while not disconnected.is_set():
@@ -81,12 +111,17 @@ def main():
                     send('size', cols=message['cols'], rows=message['rows'])
                 else:
                     raise ValueError('Unknown terminal worker message')
-            text = pty.read(blocking=False)
+            try:
+                text = pty.read(blocking=False)
+            except WinptyError:
+                # shell 退出后管道关闭，read 抛 WinptyError；视为结束，
+                # 退出循环后由 get_exitstatus 取真实退出码
+                break
             if text:
                 for offset in range(0, len(text), 4096):
                     send('output', data=text[offset:offset + 4096])
                 quiet = 0
-            elif not pty.isalive():
+            elif not _alive(pty):
                 quiet += 1
                 if quiet >= 5:
                     break

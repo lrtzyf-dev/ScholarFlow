@@ -10,6 +10,7 @@ from app import approval_store, run_store, task_runner
 from app.api import tasks as tasks_api
 from app.main import app
 from app.models import Conversation, DeletedConversation, ForegroundRun, QARecord, TaskRecord
+from app.timeutil import utcnow
 
 client = TestClient(app)
 
@@ -46,7 +47,7 @@ def test_receipts_are_idempotent_scoped_and_do_not_clear_concurrent_new_answers(
 
 
 def test_activity_includes_old_runs_approvals_finishing_and_legacy_background_entry(db, monkeypatch):
-    old = datetime.utcnow() - timedelta(days=20)
+    old = utcnow() - timedelta(days=20)
     db.add_all(ForegroundRun(id=f"chat_archived_{i:03}", conversation_id=f"c_archived_{i:03}",
                              question="Archived", status="interrupted") for i in range(125))
     db.add_all([

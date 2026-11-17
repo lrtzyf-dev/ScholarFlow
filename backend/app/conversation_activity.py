@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from . import approval_store, run_store
 from .conversation_store import backfill_conversations
 from .models import Conversation, DeletedConversation, DesktopState, ForegroundRun, QARecord, TaskRecord
+from .timeutil import utcnow
 
 
 def conversation_summaries(db: Session, scope: str = "active", ids: list[str] | None = None) -> list[dict]:
@@ -74,7 +75,7 @@ def conversation_summaries(db: Session, scope: str = "active", ids: list[str] | 
             items[cid]["draft_only"] = True
 
     active_runs = run_store.active_runs()
-    cutoff = datetime.utcnow() - timedelta(seconds=20)
+    cutoff = utcnow() - timedelta(seconds=20)
     # No history limit: an old live run must remain reachable among many interrupted ones.
     runs = db.query(ForegroundRun.id, ForegroundRun.conversation_id,
                     func.substr(ForegroundRun.question, 1, 200).label("question"),

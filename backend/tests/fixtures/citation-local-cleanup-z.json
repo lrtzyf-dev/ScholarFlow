@@ -1,0 +1,191 @@
+{
+  "origin": "Z DOC04 synthetic public evaluation fixture; original real status unchanged",
+  "answer": "以下按正文段落序号与表格行列位置定位（提取结果未提供可用页码，页码字段为空，因此不给页码）[^e1]。\n\n## 1. 研究问题（Question）\n\n正文第 2 段写明研究问题为描述一个观察性随访队列中的睡眠时长：原文为 \"Question: describe sleep duration in an observational follow-up cohort.\"[^e1]\n\n其前一段（正文第 1 段）是文档性质说明，写明该文件为虚构的验收用方案、并非真实患者数据：\"Fabricated acceptance protocol, not real patient data.\"[^e1]\n\n## 2. 方法（Method）\n\n正文第 3 段写明方法为使用问卷，不设随机化或干预：\"Method: questionnaire, no randomization or intervention.\"[^e1]\n\n即按原文表述，数据由问卷获得，设计中没有随机化和干预措施[^e1]。\n\n## 3. 表格里的随访人数\n\n表格为 2 行 × 2 列（`/document/body/tbl[1]`）[^e2][^e3][^e4][^e5]：\n\n| 表格位置 | 第 1 列 | 第 2 列 |\n|---|---|---|\n| 第 1 行（表头） | Follow-up participants[^e2] | Count[^e3] |\n| 第 2 行（数据） | Completed follow-up[^e4] | 36[^e5] |\n\n计数单元格的原文仅为 \"36\"，未附单位[^e5]；其对应的行标签为 \"Completed follow-up\"、列标签为 \"Count\"[^e3][^e4]。\n\n## 说明\n\n在已读取的提取文本中，除该 \"36\" 外未见其他计数或随访时长等数字，因此无法据此计算失访率或随访比例[^e1][^e5]。",
+  "evidence": [
+    {
+      "id": "e1",
+      "quote": "Fabricated acceptance protocol, not real patient data.\nQuestion: describe sleep duration in an observational follow-up cohort.\nMethod: questionnaire, no randomization or intervention.\nFollow-up participants\tCount\nCompleted follow-up\t36"
+    },
+    {
+      "id": "e2",
+      "quote": "Follow-up participants"
+    },
+    {
+      "id": "e3",
+      "quote": "Count"
+    },
+    {
+      "id": "e4",
+      "quote": "Completed follow-up"
+    },
+    {
+      "id": "e5",
+      "quote": "36"
+    }
+  ],
+  "audit": {
+    "passed": false,
+    "status": "failed",
+    "unsupported": [
+      {
+        "text": "表格为 2 行 × 2 列（/document/body/tbl[1]）：",
+        "reason": "引用仅覆盖第1/2行第1/2列的四个单元格，未给出表格总行列数，不能证明恰为2行×2列。"
+      }
+    ],
+    "unverified": [],
+    "mode": "llm",
+    "verified": true,
+    "claims": [
+      {
+        "text": "以下按正文段落序号与表格行列位置定位（提取结果未提供可用页码，页码字段为空，因此不给页码）。",
+        "evidence_ids": [
+          "e1"
+        ]
+      },
+      {
+        "text": "正文第 2 段写明研究问题为描述一个观察性随访队列中的睡眠时长：原文为 \"Question: describe sleep duration in an observational follow-up cohort.\"",
+        "evidence_ids": [
+          "e1"
+        ]
+      },
+      {
+        "text": "其前一段（正文第 1 段）是文档性质说明，写明该文件为虚构的验收用方案、并非真实患者数据：\"Fabricated acceptance protocol, not real patient data.\"",
+        "evidence_ids": [
+          "e1"
+        ]
+      },
+      {
+        "text": "正文第 3 段写明方法为使用问卷，不设随机化或干预：\"Method: questionnaire, no randomization or intervention.\"",
+        "evidence_ids": [
+          "e1"
+        ]
+      },
+      {
+        "text": "即按原文表述，数据由问卷获得，设计中没有随机化和干预措施。",
+        "evidence_ids": [
+          "e1"
+        ]
+      },
+      {
+        "text": "表格为 2 行 × 2 列（/document/body/tbl[1]）：",
+        "evidence_ids": [
+          "e2",
+          "e3",
+          "e4",
+          "e5"
+        ]
+      },
+      {
+        "text": "| 表格位置 | 第 1 列 | 第 2 列 |",
+        "evidence_ids": [
+          "e2",
+          "e3",
+          "e4",
+          "e5"
+        ]
+      },
+      {
+        "text": "| 第 1 行（表头） | Follow-up participants | Count |",
+        "evidence_ids": [
+          "e2",
+          "e3"
+        ]
+      },
+      {
+        "text": "| 第 2 行（数据） | Completed follow-up | 36 |",
+        "evidence_ids": [
+          "e4",
+          "e5"
+        ]
+      },
+      {
+        "text": "计数单元格的原文仅为 \"36\"，未附单位；其对应的行标签为 \"Completed follow-up\"、列标签为 \"Count\"。",
+        "evidence_ids": [
+          "e5",
+          "e3",
+          "e4"
+        ]
+      },
+      {
+        "text": "在已读取的提取文本中，除该 \"36\" 外未见其他计数或随访时长等数字，因此无法据此计算失访率或随访比例。",
+        "evidence_ids": [
+          "e1",
+          "e5"
+        ]
+      }
+    ],
+    "factual_claims": 11,
+    "unsupported_ratio": 0.09090909090909091,
+    "unverified_count": 0,
+    "known_failed_count": 1,
+    "unknown_count": 0,
+    "usage": {
+      "prompt_tokens": 21052,
+      "completion_tokens": 8284,
+      "total_tokens": 29336
+    },
+    "new_usage": {
+      "prompt_tokens": 21052,
+      "completion_tokens": 8284,
+      "total_tokens": 29336
+    },
+    "cumulative_usage": {
+      "prompt_tokens": 21052,
+      "completion_tokens": 8284,
+      "total_tokens": 29336
+    },
+    "batch_count": 3,
+    "batch_protocol": "citation_semantic_batches_v1",
+    "batches": [
+      {
+        "batch": 0,
+        "claim_start": 0,
+        "claim_count": 4,
+        "cached": false,
+        "status": "passed",
+        "error_code": null,
+        "known_failed_count": 0,
+        "unknown_count": 0,
+        "usage": {
+          "prompt_tokens": 7097,
+          "completion_tokens": 1338,
+          "total_tokens": 8435
+        },
+        "usage_source": "actual"
+      },
+      {
+        "batch": 1,
+        "claim_start": 4,
+        "claim_count": 4,
+        "cached": false,
+        "status": "failed",
+        "error_code": null,
+        "known_failed_count": 1,
+        "unknown_count": 0,
+        "usage": {
+          "prompt_tokens": 7002,
+          "completion_tokens": 2690,
+          "total_tokens": 9692
+        },
+        "usage_source": "actual"
+      },
+      {
+        "batch": 2,
+        "claim_start": 8,
+        "claim_count": 3,
+        "cached": false,
+        "status": "passed",
+        "error_code": null,
+        "known_failed_count": 0,
+        "unknown_count": 0,
+        "usage": {
+          "prompt_tokens": 6953,
+          "completion_tokens": 4256,
+          "total_tokens": 11209
+        },
+        "usage_source": "actual"
+      }
+    ],
+    "unknown_usage_batches": 0
+  }
+}

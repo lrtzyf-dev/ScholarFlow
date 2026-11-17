@@ -1,0 +1,100 @@
+%PDF-1.3
+%“Œ‹ž ReportLab Generated PDF document (opensource)
+1 0 obj
+<<
+/F1 2 0 R /F2 3 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
+endobj
+4 0 obj
+<<
+/Contents 8 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 7 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>> 
+  /Type /Page
+>>
+endobj
+5 0 obj
+<<
+/PageMode /UseNone /Pages 7 0 R /Type /Catalog
+>>
+endobj
+6 0 obj
+<<
+/Author (Zhang Yifan) /CreationDate (D:20261117085124+08'00') /Creator (anonymous) /Keywords () /ModDate (D:20261117085124+08'00') /Producer (ReportLab PDF Library - \(opensource\)) 
+  /Subject (unspecified) /Title (ScholarFlow Synthetic Research Sample) /Trapped /False
+>>
+endobj
+7 0 obj
+<<
+/Count 1 /Kids [ 4 0 R ] /Type /Pages
+>>
+endobj
+8 0 obj
+<<
+/Length 1295
+>>
+stream
+1 0 0 1 0 0 cm  BT /F1 12 Tf 14.4 TL ET
+BT /F2 15 Tf 18 TL ET
+BT 1 0 0 1 54 783.8898 Tm (ScholarFlow Synthetic Research Sample) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 54 761.8898 Tm (Synthetic demonstration document. All records and numbers are fictional;) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 54 745.8898 Tm (this is not a scientific publication.) Tj T* ET
+BT /F2 12 Tf 14.4 TL ET
+BT 1 0 0 1 54 717.8898 Tm (Methods) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 54 701.8898 Tm (We evaluated a retrieval method on ten synthetic queries.) Tj T* ET
+BT /F2 12 Tf 14.4 TL ET
+BT 1 0 0 1 54 673.8898 Tm (Results) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 54 657.8898 Tm (Eight of the ten synthetic queries retrieved a relevant record within the) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 54 641.8898 Tm (top three results \(8/10, 80%\).) Tj T* ET
+BT /F2 12 Tf 14.4 TL ET
+BT 1 0 0 1 54 613.8898 Tm (Limitations) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 54 597.8898 Tm (The sample contains only ten synthetic queries. No baseline system,) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 54 581.8898 Tm (confidence interval, or significance test was evaluated.) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 54 565.8898 Tm (These fabricated results do not establish performance on real research.) Tj T* ET
+ 
+endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000061 00000 n 
+0000000102 00000 n 
+0000000209 00000 n 
+0000000321 00000 n 
+0000000524 00000 n 
+0000000592 00000 n 
+0000000884 00000 n 
+0000000943 00000 n 
+trailer
+<<
+/ID 
+[<0c2a363b8d85eaf30a3743f34e9a6eda><0c2a363b8d85eaf30a3743f34e9a6eda>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 6 0 R
+/Root 5 0 R
+/Size 9
+>>
+startxref
+2289
+%%EOF

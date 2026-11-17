@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import numpy as np
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,28 @@ RRF_K = 60
 _WORD = re.compile(r"[a-z0-9]+")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
 
+# 常见中文虚词/单字（停用字）：单独出现不构成相关性，离线词袋下用于剔除噪声
+_COMMON_CJK = set("的了是在我你他她它们和与及或也就都很最个些这那吗呢吧啊呀哦么为何如何什么怎样怎么哪里哪个为什么可以需要一个一道一种")
+
+
+def _strong_tokens(text: str) -> set[str]:
+    """提取查询的强信号特征词：英文词（长度>1）与中文二元组。
+
+    离线哈希词袋下，中文单字偶然匹配率高（如"码/表/量"等常见字），作为噪声
+    剔除；英文专有词与连续中文二元组能可靠反映实质内容是否在块中出现。
+    """
+    from ..pipeline.embeddings import _tokenize
+
+    out: set[str] = set()
+    for tok in _tokenize(text):
+        if tok.isascii() and tok.isalnum():
+            if len(tok) > 1:
+                out.add(tok)
+        elif len(tok) > 1:  # 中文二元组
+            if not all(c in _COMMON_CJK for c in tok):
+                out.add(tok)
+    return out
+
 
 @dataclass
 class Evidence:
@@ -30,6 +53,8 @@ class Evidence:
     bbox: list[float] | None
     quote: str
     score: float = 0.0
+    # 与查询的余弦相关性（区别于 RRF 排名融合分 score），用于阈值拒答
+    relevance: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +66,7 @@ class Evidence:
             "bbox": self.bbox,
             "quote": self.quote,
             "score": round(self.score, 5),
+            "relevance": round(self.relevance, 5),
         }
 
 
@@ -68,8 +94,26 @@ def fts_search(db: Session, query: str, topk: int, paper_id: str | None) -> list
 
 
 def dense_search(query: str, topk: int, paper_id: str | None) -> list[tuple[str, float]]:
+    from ..db import SessionLocal
+    from ..library_index_vectors import query_store
+    with SessionLocal() as db:
+        store = query_store(db, NumpyVectorStore())
+        if not store.embedding_cache_matches_current(): return []
+        vec = get_embedder().encode([query])[0]
+        if not store.has_compatible_dimension(vec): return []
+        return store.search(vec, topk=topk, paper_id=paper_id)
+
+
+def _dense_search_with_vector(
+    query: str, topk: int, paper_id: str | None, store: NumpyVectorStore
+) -> tuple[np.ndarray | None, list[tuple[str, float]]]:
+    """Embed the query once and retain its vector for MMR scoring."""
+    if not store.embedding_cache_matches_current():
+        return None, []
     vec = get_embedder().encode([query])[0]
-    return NumpyVectorStore().search(vec, topk=topk, paper_id=paper_id)
+    if not store.has_compatible_dimension(vec):
+        return None, []
+    return vec, store.search(vec, topk=topk, paper_id=paper_id)
 
 
 def rrf_fuse(rank_lists: list[list[str]], topk: int) -> list[tuple[str, float]]:
@@ -153,7 +197,12 @@ def _mmr_select(query_vec, cand_vecs, scores, topk: int,
 def retrieve(db: Session, query: str, topk: int = 6, paper_id: str | None = None) -> list[Evidence]:
     candidate_k = topk * 4
     bm25_ids = fts_search(db, query, candidate_k, paper_id)
-    dense_hits = dense_search(query, candidate_k, paper_id)
+    from ..library_index_vectors import query_store
+    vector_store = query_store(db, NumpyVectorStore())
+    query_vector, dense_hits = _dense_search_with_vector(
+        query, candidate_k, paper_id, vector_store
+    )
+    semantic_available = query_vector is not None
     # 先融合出较大候选池，再做 MMR 去重/多样性选择
     fused = rrf_fuse([bm25_ids, [cid for cid, _ in dense_hits]], topk=candidate_k)
     if not fused:
@@ -161,30 +210,70 @@ def retrieve(db: Session, query: str, topk: int = 6, paper_id: str | None = None
 
     fused_ids = [cid for cid, _ in fused]
     score_map = dict(fused)
-    rows = db.query(Chunk).filter(Chunk.id.in_(fused_ids)).all()
+    rows = db.query(Chunk).populate_existing().filter(Chunk.id.in_(fused_ids)).all()
     # 按融合顺序排列候选
     rows = sorted(rows, key=lambda r: fused_ids.index(r.id))
-    if not rows:
-        return []
+    relevance_by_id: dict[str, float] = {}
+    if semantic_available:
+        # Reuse vectors created by the indexer; candidate text must not be embedded per query.
+        candidate_vectors = vector_store.vectors_for(fused_ids)
+        semantic_available = all(row.id in candidate_vectors for row in rows)
 
-    # 计算查询与候选块向量（复用当前 embedder；离线为哈希向量、在线为语义向量）
-    embedder = get_embedder()
-    import numpy as np
+    if semantic_available:
+        qv = query_vector
+        qv = qv / (np.linalg.norm(qv) or 1.0)
+        cv = np.asarray([candidate_vectors[row.id] for row in rows], dtype=np.float32)
+        norms = np.linalg.norm(cv, axis=1, keepdims=True)
+        cv = cv / np.where(norms > 0, norms, 1.0)
+        cand_scores = [score_map.get(r.id, 0.0) for r in rows]
+        qsim = cv @ qv
 
-    qv = embedder.encode([query])[0]
-    qv = qv / (np.linalg.norm(qv) or 1.0)
-    cv = embedder.encode([r.content for r in rows])
-    norms = np.linalg.norm(cv, axis=1, keepdims=True)
-    cv = cv / np.where(norms > 0, norms, 1.0)
-    cand_scores = [score_map.get(r.id, 0.0) for r in rows]
-    chosen = _mmr_select(qv, cv, cand_scores, topk=topk)
+        from ..config import settings
+        min_rel = float(settings.min_relevance_score)
+        local_mode = settings.embedding_mode not in ("api", "litellm")
+        query_strong = _strong_tokens(query) if local_mode else None
+
+        def _is_relevant(i: int) -> bool:
+            if local_mode:
+                return bool(query_strong & _strong_tokens(rows[i].content))
+            return float(qsim[i]) >= min_rel
+
+        rel_idx = [i for i in range(len(rows)) if _is_relevant(i)]
+        if not rel_idx:
+            return []
+        chosen_rel = _mmr_select(
+            qv, cv[rel_idx], [cand_scores[i] for i in rel_idx], topk=topk
+        )
+        selected_rows = [rows[rel_idx[i]] for i in chosen_rel]
+        relevance_by_id = {row.id: float(qsim[i]) for i, row in enumerate(rows)}
+    else:
+        # Unknown or stale vector metadata disables semantic scoring, while FTS
+        # remains useful and does not require an Embedding request.
+        lexical_fused = rrf_fuse([bm25_ids], topk=candidate_k)
+        lexical_ids = [cid for cid, _ in lexical_fused]
+        if not lexical_ids:
+            return []
+        score_map = dict(lexical_fused)
+        rows = db.query(Chunk).populate_existing().filter(Chunk.id.in_(lexical_ids)).all()
+        rows = sorted(rows, key=lambda r: lexical_ids.index(r.id))
+        query_strong = _strong_tokens(query)
+        lexical_rows = []
+        for row in rows:
+            content_strong = _strong_tokens(row.content)
+            overlap = query_strong & content_strong
+            if query_strong and not overlap:
+                continue
+            relevance_by_id[row.id] = (
+                len(overlap) / len(query_strong) if query_strong else 0.0
+            )
+            lexical_rows.append(row)
+        selected_rows = lexical_rows[:topk]
 
     paper_cache: dict[str, str] = {}
     out: list[Evidence] = []
-    for ri in chosen:
-        row = rows[ri]
+    for row in selected_rows:
         if row.paper_id not in paper_cache:
-            p = db.get(Paper, row.paper_id)
+            p = db.get(Paper, row.paper_id, populate_existing=True)
             paper_cache[row.paper_id] = p.title if p else ""
         out.append(
             Evidence(
@@ -196,6 +285,7 @@ def retrieve(db: Session, query: str, topk: int = 6, paper_id: str | None = None
                 bbox=row.bbox,
                 quote=_quote_snippet(row.content, query),
                 score=score_map.get(row.id, 0.0),
+                relevance=relevance_by_id.get(row.id, 0.0),
             )
         )
     # 保持 MMR 顺序（已按相关度+多样性排序），重新连续编号

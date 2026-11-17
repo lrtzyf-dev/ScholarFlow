@@ -10,7 +10,11 @@ export const conversationArchive = reactive({
   retry: null as Operation | null,
 })
 
-export async function changeConversationArchive(id: string, archived: boolean, revision: number): Promise<ConversationArchiveState | null> {
+export async function changeConversationArchive(
+  id: string,
+  archived: boolean,
+  revision: number
+): Promise<ConversationArchiveState | null> {
   if (conversationArchive.pending.has(id)) return null
   conversationArchive.pending.add(id)
   conversationArchive.error = ''
@@ -26,7 +30,8 @@ export async function changeConversationArchive(id: string, archived: boolean, r
     return saved
   } catch (error: any) {
     const detail = error?.response?.data?.detail
-    conversationArchive.error = (typeof detail === 'string' ? detail : detail?.message) ||
+    conversationArchive.error =
+      (typeof detail === 'string' ? detail : detail?.message) ||
       (archived ? '归档失败，请重试' : '恢复失败，请重试')
     const status = error?.response?.status
     if (!status || status >= 500) conversationArchive.retry = { id, archived, revision }

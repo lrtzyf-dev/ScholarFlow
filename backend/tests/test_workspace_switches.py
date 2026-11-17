@@ -16,6 +16,7 @@ from app.db import SessionLocal, engine, _lightweight_migrations
 from app.main import app
 from app.models import Conversation, DesktopState, QARecord, TaskRecord, ForegroundRun, DeletedConversation, WorkspaceSwitch
 from tests.test_worktrees import source, repo, git, create
+from app.timeutil import utcnow
 
 
 @pytest.fixture
@@ -108,7 +109,7 @@ def test_confirmation_rechecks_review_and_execution(setup, change):
     try:
         with SessionLocal() as db:
             if change == 'draft': db.add(DesktopState(key='conversation:switch_chat', value=ConversationState(text='后写入').model_dump()))
-            if change == 'archived': db.get(Conversation, 'switch_chat').archived_at = datetime.utcnow()
+            if change == 'archived': db.get(Conversation, 'switch_chat').archived_at = utcnow()
             if change == 'pending-task': db.add(TaskRecord(id='pending', type='agent', title='待执行', status='pending', conversation_id='switch_chat'))
             db.commit()
         if change == 'head': git(Path(tree['path']), 'commit', '--allow-empty', '-m', 'changed')

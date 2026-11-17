@@ -15,7 +15,8 @@ class InvalidCursor(ValueError):
     pass
 
 
-def query_conversations(db, *, scope="active", q="", sort="updated_at", limit=40, cursor=None, ids=None):
+def query_conversations(db, *, scope="active", q="", sort="updated_at", limit=40, cursor=None, ids=None,
+                        project_scope="all"):
     from . import run_store, task_runner
 
     q = q.strip()
@@ -61,6 +62,10 @@ def query_conversations(db, *, scope="active", q="", sort="updated_at", limit=40
     conditions = []
     if scope != "all":
         conditions.append("c.archived_at IS " + ("NOT NULL" if scope == "archived" else "NULL"))
+    if project_scope == "unassigned":
+        # Filter before counting and pagination, including pinned project chats.
+        # Legacy drafts/runs without a materialized conversation remain visible.
+        conditions.append("NOT EXISTS (SELECT 1 FROM conversations pc WHERE pc.id=c.id AND pc.project_id IS NOT NULL)")
     if ids is not None:
         conditions.append(f"c.id IN ({binds('cid', ids)})")
     join = ""
@@ -101,9 +106,11 @@ def query_conversations(db, *, scope="active", q="", sort="updated_at", limit=40
     if cursor:
         try:
             value = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
-            if not isinstance(value, list) or len(value) != 7 or value[:3] != [scope, q, sort]:
+            if isinstance(value, list) and len(value) == 7 and project_scope == "all":
+                value.insert(3, "all")  # Accept older unfiltered cursors.
+            if not isinstance(value, list) or len(value) != 8 or value[:4] != [scope, q, sort, project_scope]:
                 raise ValueError()
-            p0, r0, t0, id0 = value[3:]
+            p0, r0, t0, id0 = value[4:]
             if (type(p0) is not int or p0 not in (0, 1) or type(r0) is not int or not -1 <= r0 <= 10**9
                     or not isinstance(t0, str) or not 1 <= len(t0) <= 64
                     or not isinstance(id0, str) or not 1 <= len(id0) <= 64):
@@ -131,5 +138,5 @@ def query_conversations(db, *, scope="active", q="", sort="updated_at", limit=40
     next_cursor = None
     if more:
         last = rows[-1]
-        next_cursor = base64.urlsafe_b64encode(json.dumps([scope, q, sort, last["p"], last["rank"], last["at"], last["id"]]).encode()).decode()
+        next_cursor = base64.urlsafe_b64encode(json.dumps([scope, q, sort, project_scope, last["p"], last["rank"], last["at"], last["id"]]).encode()).decode()
     return {"conversations": items, "total": total, "pinned_total": pinned_total, "next_cursor": next_cursor}

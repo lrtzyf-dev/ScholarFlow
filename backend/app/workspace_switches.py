@@ -12,6 +12,7 @@ from sqlalchemy import text
 from . import workspace, worktrees, git_operations, project_git as git, workspace_write, run_store
 from .db import SessionLocal
 from .models import Conversation, DeletedConversation, DesktopState, ManagedWorktree, WorkspaceSwitch
+from .timeutil import utcnow
 
 
 class Prepare(BaseModel):
@@ -140,7 +141,7 @@ def apply(cid, id):
         current = _inspect(db, conv, row.target_project_id, stack)
         if any(current[key] != row.snapshot[key] for key in current):
             workspace.fail('目录、Git 提交、分支或改动列表已变化，请重新审阅', 409)
-        now = datetime.utcnow()
+        now = utcnow()
         conv.project_id = row.target_project_id
         conv.workspace_revision = row.workspace_revision + 1
         conv.updated_at = now

@@ -8,9 +8,11 @@ import os
 import secrets
 import tempfile
 import threading
+from .runtime_lock_file import open_lock_file, validate_open_lock, LockIdentityError
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Literal
 from uuid import uuid4
@@ -20,6 +22,24 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 class RuntimeInUse(RuntimeError):
     pass
+
+
+_WINDOWS = os.name == "nt"
+# A reader/antivirus may briefly deny rename on Windows. Bound publication's
+# total backoff to 0.55s; persistent ACL and other I/O errors remain failures.
+_DESCRIPTOR_REPLACE_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.1, 0.1, 0.1, 0.1)
+
+
+def _replace_descriptor(source: Path, destination: Path) -> None:
+    for attempt in range(len(_DESCRIPTOR_REPLACE_DELAYS) + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            if (not _WINDOWS or getattr(exc, "winerror", None) not in (5, 32, 33)
+                    or attempt == len(_DESCRIPTOR_REPLACE_DELAYS)):
+                raise
+            time.sleep(_DESCRIPTOR_REPLACE_DELAYS[attempt])
 
 
 class Descriptor(BaseModel):
@@ -63,18 +83,30 @@ class RuntimeOwner:
 
     def _acquire(self, kind: Literal["desktop", "service"]) -> bool:
         self.directory.mkdir(parents=True, exist_ok=True)
-        source = (self.directory / ".runtime.lock").open("a+b")
+        source = None
         try:
-            if os.fstat(source.fileno()).st_size == 0:
-                source.write(b"0")
-                source.flush()
+            source = open_lock_file(self.directory / ".runtime.lock")
             _lock_file(source)
+            validate_open_lock(source, self.directory / ".runtime.lock")
+        except LockIdentityError as exc:
+            if source is not None:
+                source.close()
+            raise RuntimeInUse(str(exc)) from None
         except OSError as exc:
-            source.close()
+            if source is not None:
+                source.close()
             if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                 return False
             raise
         self._file = source
+        try:
+            from .install_barrier import blocks_startup
+            if blocks_startup(self.directory):
+                raise RuntimeInUse("安装升级尚未完成恢复，请先恢复升级事务再启动研序")
+        except BaseException:
+            self._file.close()
+            self._file = None
+            raise
         self._descriptor = Descriptor(instance_id=uuid4().hex, token=secrets.token_urlsafe(32),
                                       pid=os.getpid(), kind=kind, state="starting")
         try:
@@ -90,7 +122,7 @@ class RuntimeOwner:
         try:
             with os.fdopen(handle, "w", encoding="utf-8") as target:
                 target.write(self._descriptor.model_dump_json())
-            os.replace(temporary, self.directory / ".runtime.json")
+            _replace_descriptor(temporary, self.directory / ".runtime.json")
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -128,6 +160,22 @@ class RuntimeOwner:
         with self._guard:
             self._descriptor.state = "ready"
             self._publish()
+
+    @contextmanager
+    def startup_recovery_guard(self):
+        """Hold exclusive startup ownership until durable recovery commits.
+
+        The OS data-directory lock excludes every previous backend, including
+        one still waiting for a live tool thread during shutdown. Merely seeing
+        an old PID, timestamp or a terminal run is never takeover evidence.
+        """
+        with self._guard:
+            descriptor = self._descriptor
+            if (self._file is None or self._file.closed or not self._serving
+                    or descriptor is None or descriptor.pid != os.getpid()
+                    or descriptor.state != "starting"):
+                raise RuntimeInUse("资源恢复仅允许在独占数据目录的服务启动阶段执行")
+            yield descriptor.instance_id
 
     def set_activation(self, callback: Callable[[], bool]):
         with self._guard:

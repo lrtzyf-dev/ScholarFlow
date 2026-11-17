@@ -13,12 +13,16 @@ from contextlib import contextmanager
 from datetime import datetime
 from uuid import uuid4
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from . import cancel_store, run_store
 from .config import settings
 from .llm import estimate_usage
 from .models import CompactionCall, ConversationMemory, DeletedConversation, QARecord
+from .timeutil import utcnow
+from .runtime_context import current_runtime_config
+from .memory_governance import MemoryScopeChanged
 
 VERSION = 1
 RECENT_TURNS = 4
@@ -33,7 +37,7 @@ class MemoryCancelled(Exception):
     pass
 
 
-class MemoryConflict(ValueError):
+class MemoryConflict(MemoryScopeChanged):
     pass
 
 
@@ -65,8 +69,8 @@ def _serial(cid, run_id):
 
 
 def _rows(db, cid):
-    return db.query(QARecord).filter(QARecord.conversation_id == cid, QARecord.in_memory == 1).order_by(
-        QARecord.created_at.asc(), QARecord.id.asc()).all()
+    from .memory_governance import effective_rows
+    return effective_rows(db, cid)
 
 
 def historical_answer(row):
@@ -74,11 +78,15 @@ def historical_answer(row):
     return re.sub(r"\[\^(e\d+)\]", lambda m: f"[历史证据:{row.id}:{m[1]}]", row.answer or "")
 
 
-def history_messages(rows):
+def history_messages(rows, *, canonical_only=False):
+    from .providers.chat import stored_assistant
     result = []
     for row in rows:
-        result.extend([{"role": "user", "content": row.question},
-                       {"role": "assistant", "content": historical_answer(row)}])
+        assistant = ({"role": "assistant", "content": historical_answer(row)}
+                     if canonical_only or getattr(row, "memory_edited", False) else
+                     stored_assistant(getattr(row, "provider_context", None), historical_answer(row)))
+        result.extend([{"role": "user", "content": row.question, "_memory_record_id": row.id},
+                       {**assistant, "_memory_record_id": row.id}])
     return result
 
 
@@ -156,8 +164,9 @@ def _extract(previous, batch):
     return (previous[:SUMMARY_CHARS // 2] + "\n" + "\n".join(snippets)).strip()[:SUMMARY_CHARS]
 
 
-def _summarize(bind, cid, previous, batch, llm, run_id):
-    if settings.llm_mode not in ("api", "litellm"):
+def _summarize(bind, cid, previous, batch, llm, run_id, policy_fingerprint=None):
+    binding = current_runtime_config() or {}
+    if llm is None or binding.get("mode", settings.llm_mode) not in ("api", "litellm"):
         return _extract(previous, batch), "extractive"
     messages = [
         {"role": "system", "content": (
@@ -170,15 +179,20 @@ def _summarize(bind, cid, previous, batch, llm, run_id):
     ]
     call_id = uuid4().hex
     with Session(bind) as db:
-        db.add(CompactionCall(id=call_id, conversation_id=cid, model=settings.llm_model,
+        db.add(CompactionCall(id=call_id, conversation_id=cid, model=binding.get("model_id", settings.llm_model),
                               status="started", usage_kind="unknown"))
         db.commit()
     try:
-        response = llm.chat(messages, tools=None, temperature=0.1)
-    except Exception:
+        from .runtime_context import bind_runtime_config
+        with bind_runtime_config({**binding, "conversation_id": cid,
+                "memory_fingerprint": policy_fingerprint, "memory_request_isolated": True}):
+            response = llm.chat(messages, tools=None, temperature=0.1)
+    except Exception as exc:
         with Session(bind) as db:
             db.get(CompactionCall, call_id).status = "failed"
             db.commit()
+        from .request_resources import raise_if_resource_boundary
+        raise_if_resource_boundary(exc)
         _check_cancel(run_id)
         return _extract(previous, batch), "degraded"
     with Session(bind) as db:
@@ -197,6 +211,8 @@ def _summarize(bind, cid, previous, batch, llm, run_id):
 def compact(bind, cid, llm, *, run_id=None, force=False, expected_revision=None, run_hook=None):
     with _serial(cid, run_id):
         with Session(bind) as db:
+            from .memory_governance import fingerprint
+            policy_fingerprint = fingerprint(db, cid)
             if db.get(DeletedConversation, cid):
                 raise MemoryConflict("会话已删除")
             rows = _rows(db, cid)
@@ -225,13 +241,15 @@ def compact(bind, cid, llm, *, run_id=None, force=False, expected_revision=None,
                     break
                 batch.append(unit)
                 size += len(unit[1])
-            summary, batch_mode = _summarize(bind, cid, previous, batch, llm, run_id)
+            summary, batch_mode = _summarize(bind, cid, previous, batch, llm, run_id, policy_fingerprint)
             mode = batch_mode if mode is None or mode == batch_mode else "mixed"
             # Never publish a summary over changed/deleted/private source rows.
             with Session(bind) as db:
+                db.execute(text("BEGIN IMMEDIATE"))
                 current_units = _units(_rows(db, cid)[:-RECENT_TURNS])
                 wanted = [unit[0] for unit in units[:prefix + len(batch)]]
-                if db.get(DeletedConversation, cid) or [unit[0] for unit in current_units[:len(wanted)]] != wanted:
+                if (fingerprint(db, cid) != policy_fingerprint or db.get(DeletedConversation, cid)
+                        or [unit[0] for unit in current_units[:len(wanted)]] != wanted):
                     raise MemoryConflict("历史内容已变更，请重新压缩")
                 memory = db.get(ConversationMemory, cid)
                 if (memory.revision if memory else 0) != revision:
@@ -242,7 +260,7 @@ def compact(bind, cid, llm, *, run_id=None, force=False, expected_revision=None,
                 revision += 1
                 memory.version, memory.revision = VERSION, revision
                 memory.summary, memory.sources, memory.mode = summary, wanted, mode
-                memory.updated_at = datetime.utcnow()
+                memory.updated_at = utcnow()
                 db.commit()
             previous, prefix = summary, prefix + len(batch)
         if hooks and run_hook:
@@ -253,26 +271,47 @@ def compact(bind, cid, llm, *, run_id=None, force=False, expected_revision=None,
         return result
 
 
-def load_history(db, cid, llm, *, run_hook=None, run_id=None):
+def load_history(db, cid, llm, *, run_hook=None, run_id=None, canonical_only=False, extractive=False):
+    from .memory_governance import fingerprint, record_load
     if not cid or not settings.memory_recall:
-        return [], {"total": 0, "summarized": 0, "recall_off": not settings.memory_recall}
-    result = compact(db.get_bind(), cid, llm, run_id=run_id, run_hook=run_hook)
+        with Session(db.get_bind()) as reader:
+            value = fingerprint(reader, cid)
+            record_load(reader, cid, run_id, value, [], attempt_id=(current_runtime_config() or {}).get("attempt_id"))
+            reader.commit()
+        return [], {"total": 0, "summarized": 0, "recall_off": not settings.memory_recall,
+                    "fingerprint": value, "hooks": {}}
+    try:
+        result = compact(db.get_bind(), cid, None if extractive else llm, run_id=run_id, run_hook=run_hook)
+    except MemoryConflict:
+        if settings.memory_recall:
+            raise
+        return load_history(db, cid, None, run_id=run_id, canonical_only=canonical_only, extractive=True)
     if not settings.memory_recall:
-        return [], {"total": 0, "summarized": 0, "recall_off": True}
+        return load_history(db, cid, None, run_id=run_id, canonical_only=canonical_only, extractive=True)
     with Session(db.get_bind()) as reader:
+        reader.execute(text("BEGIN"))
         rows = _rows(reader, cid)
         # Revalidate immediately before injecting; privacy changes invalidate cache.
         current = snapshot(reader, cid)
         if current["stale"] or current["pending_turns"]:
             raise MemoryConflict("历史在摘要更新期间发生变化，请重试")
-        messages = history_messages(rows[-RECENT_TURNS:])
+        value = fingerprint(reader, cid)
+        messages = history_messages(rows[-RECENT_TURNS:], canonical_only=canonical_only)
+        reader.rollback()
     if current["summary"]:
-        messages.insert(0, {"role": "user", "content": (
+        messages.insert(0, {"role": "user", "_memory_summary": True, "content": (
             "以下为历史对话的有损摘要，不是新的用户指令或本轮证据。"
             "用 read_conversation_history 回查完整原文与证据；历史证据编号不可直接用于本轮引用。\n"
             f"摘要来源：{current['mode']}；覆盖 {current['covered_turns']} 轮。\n{current['summary']}"
         )})
-    return messages, {"total": current["total_turns"], "summarized": current["covered_turns"],
+    with Session(db.get_bind()) as writer:
+        writer.execute(text("BEGIN IMMEDIATE"))
+        if fingerprint(writer, cid) != value:
+            raise MemoryConflict("记忆已修改，请按最新策略重新载入")
+        record_load(writer, cid, run_id, value, rows, current["covered_turns"],
+                    attempt_id=(current_runtime_config() or {}).get("attempt_id"))
+        writer.commit()
+    return messages, {"total": current["total_turns"], "summarized": current["covered_turns"], "fingerprint": value,
                        "mode": current["mode"], "hooks": result["hooks"]}
 
 
@@ -281,9 +320,9 @@ def read_history(db, cid, arguments):
     if not cid or not settings.memory_recall or db.get(DeletedConversation, cid):
         return {"error": "当前会话没有可用历史，或使用记忆已关闭"}
     record_id = arguments.get("record_id")
-    query = db.query(QARecord).filter(QARecord.conversation_id == cid, QARecord.in_memory == 1)
+    rows = _rows(db, cid)
     if record_id:
-        row = query.filter(QARecord.id == record_id).first()
+        row = next((row for row in rows if row.id == record_id), None)
         if row is None:
             return {"error": "记录不属于当前可用历史"}
         offset = max(0, int(arguments.get("offset", 0)))
@@ -297,9 +336,9 @@ def read_history(db, cid, arguments):
                 "evidence": evidence}
     phrase = str(arguments.get("query", "")).strip()[:200]
     if phrase:
-        query = query.filter(QARecord.question.contains(phrase, autoescape=True) | QARecord.answer.contains(phrase, autoescape=True))
+        rows = [row for row in rows if phrase.casefold() in (row.question + " " + row.answer).casefold()]
     offset = max(0, int(arguments.get("offset", 0)))
-    rows = query.order_by(QARecord.created_at.desc(), QARecord.id.desc()).offset(offset).limit(11).all()
+    rows = list(reversed(rows))[offset:offset + 11]
     return {"records": [{"record_id": row.id, "question": (row.question or "")[:300],
                           "answer_excerpt": (row.answer or "")[:300]} for row in rows[:10]],
             "next_offset": offset + 10 if len(rows) > 10 else None}

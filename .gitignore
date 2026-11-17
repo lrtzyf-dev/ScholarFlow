@@ -41,8 +41,64 @@ submission/_rendered/
 submission/_work/
 submission/*.zip
 
+# Test reports (regenerable; never committed)
+backend/junit*.xml
+junit*.xml
+.coverage
+htmlcov/
+
 # OS / IDE
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+
+# Local interface reference, desktop bundle and integration QA outputs.
+ScholarFlow-source/
+ScholarFlow程序/
+verification/ui-integration/
+启动研序.lnk
+
+# 部署凭据与部署副本（含真实 IP / 密码 / Key，禁止入库）
+ScholarFlow-服务器部署说明.md
+_deploy/
+
+# 根目录生成的二进制与渲染产物
+*.mp4
+研序ScholarFlow-*-rendered.pdf
+研序ScholarFlow-*.docx
+
+# 设计稿与提交/验收的渲染中间产物
+UI重设计-20261031/
+submission/_rendered_docx/
+submission/_rendered_intro/
+submission/研序ScholarFlow-源码提交包-*/
+
+# Rebuildable release environments and downloaded/source-built artifacts.
+verification/release-engineering/.venv-*/
+verification/release-engineering/wheelhouse-win-amd64-cp314/
+verification/release-engineering/bootstrap-wheels/
+verification/release-engineering/source-artifacts/*.tar.gz
+verification/release-engineering/source-wheel-replay/
+verification/作品介绍文档-rendered/
+
+# Disposable test storage and preserved old test scratch (not release evidence).
+verification/test-temp-*/
+
+# Public-repository protection for local configuration and runtime data
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.sqlite
+*.sqlite3
+*.db
+backend/data/*
+!backend/data/.gitkeep
+
+# Editor and generated build artifacts
+.vscode/
+.idea/
+*.log

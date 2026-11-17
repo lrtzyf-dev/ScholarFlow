@@ -13,7 +13,19 @@ import sql from 'highlight.js/lib/languages/sql'
 import yaml from 'highlight.js/lib/languages/yaml'
 import r from 'highlight.js/lib/languages/r'
 
-for (const [name, language] of Object.entries({ python, javascript, typescript, json, bash, powershell, xml, css, sql, yaml, r })) {
+for (const [name, language] of Object.entries({
+  python,
+  javascript,
+  typescript,
+  json,
+  bash,
+  powershell,
+  xml,
+  css,
+  sql,
+  yaml,
+  r,
+})) {
   hljs.registerLanguage(name, language)
 }
 
@@ -30,7 +42,13 @@ interface AnswerEnvironment extends Env {
 }
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: true })
-markdown.use(katex, { delimiters: 'all' as const, trust: false, maxExpand: 200, maxSize: 20, throwOnError: false })
+markdown.use(katex, {
+  delimiters: 'all' as const,
+  trust: false,
+  maxExpand: 200,
+  maxSize: 20,
+  throwOnError: false,
+})
 
 // Replace text tokens only, preserving code and link-label semantics.
 markdown.core.ruler.after('linkify', 'evidence_ref', (state) => {
@@ -87,12 +105,15 @@ markdown.core.ruler.after('evidence_ref', 'answer_tables', (state) => {
     else if (token.type === 'tr_open') row = []
     else if (token.type === 'th_open' || token.type === 'td_open') cell = ''
     else if (table && token.type === 'inline') {
-      cell += (token.children || []).map((child) => {
-        if (child.type === 'softbreak' || child.type === 'hardbreak') return '\n'
-        if (child.type === 'evidence_ref') return `[^${child.content}]`
-        if (['text', 'code_inline', 'image', 'math_inline'].includes(child.type)) return child.content
-        return ''
-      }).join('')
+      cell += (token.children || [])
+        .map((child) => {
+          if (child.type === 'softbreak' || child.type === 'hardbreak') return '\n'
+          if (child.type === 'evidence_ref') return `[^${child.content}]`
+          if (['text', 'code_inline', 'image', 'math_inline'].includes(child.type))
+            return child.content
+          return ''
+        })
+        .join('')
     } else if (token.type === 'th_close' || token.type === 'td_close') row.push(cell)
     else if (table && token.type === 'tr_close') table.push(row)
     else if (table && token.type === 'table_close') {
@@ -108,21 +129,39 @@ markdown.renderer.rules.table_open = (_tokens, _index, _options, environment) =>
   return `<div class="markdown-table-block"><div class="markdown-block-toolbar"><span>表格</span><span data-table-actions="${index}"></span></div><div class="markdown-table"><table>\n`
 }
 markdown.renderer.rules.table_close = () => '</table></div></div>\n'
-markdown.renderer.rules.fence = markdown.renderer.rules.code_block = (tokens, index, _options, environment) => {
+markdown.renderer.rules.fence = markdown.renderer.rules.code_block = (
+  tokens,
+  index,
+  _options,
+  environment
+) => {
   const env = environment as AnswerEnvironment
   const token = tokens[index]
   const language = (token.info || '').trim().split(/\s+/)[0].slice(0, 80)
   let code = markdown.utils.escapeHtml(token.content)
   // Bound highlighting work and keep unrecognised languages as literal text.
-  if (token.content.length <= 100_000 && /^[a-z\d_+#.-]{1,40}$/i.test(language) && hljs.getLanguage(language)) {
-    try { code = hljs.highlight(token.content, { language, ignoreIllegals: true }).value } catch { /* Escaped text remains available. */ }
+  if (
+    token.content.length <= 100_000 &&
+    /^[a-z\d_+#.-]{1,40}$/i.test(language) &&
+    hljs.getLanguage(language)
+  ) {
+    try {
+      code = hljs.highlight(token.content, { language, ignoreIllegals: true }).value
+    } catch {
+      /* Escaped text remains available. */
+    }
   }
   const id = env.codeBlocks.push(token.content) - 1
   return `<div class="markdown-code"><div class="markdown-block-toolbar"><span>${markdown.utils.escapeHtml(language || 'text')}</span><span data-code-actions="${id}"></span></div><pre><code class="hljs">${code}</code></pre></div>\n`
 }
 
 export function renderAnswer(text: string, evidenceIds: string[] = []): RenderedAnswer {
-  const env: AnswerEnvironment = { evidenceIds: new Set(evidenceIds), codeBlocks: [], tables: [], tableCursor: 0 }
+  const env: AnswerEnvironment = {
+    evidenceIds: new Set(evidenceIds),
+    codeBlocks: [],
+    tables: [],
+    tableCursor: 0,
+  }
   const html = markdown.render(text, env)
   return { html, codeBlocks: env.codeBlocks, tables: env.tables }
 }

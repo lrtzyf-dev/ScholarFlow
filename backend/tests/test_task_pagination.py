@@ -10,12 +10,13 @@ from app import approval_store, task_events, task_runner
 from app.api import tasks as tasks_api
 from app.main import app
 from app.models import TaskRecord
+from app.timeutil import utcnow
 
 client = TestClient(app)
 
 
 def seed_history(db, count=125):
-    old = datetime.utcnow() - timedelta(days=10)
+    old = utcnow() - timedelta(days=10)
     db.add_all(TaskRecord(id=f"history_{i:03}", type="agent", title=f"History {i}", status="done",
                           created_at=old, updated_at=old) for i in range(count))
     db.commit()
@@ -23,7 +24,7 @@ def seed_history(db, count=125):
 
 def test_all_active_tasks_and_approvals_survive_more_than_100_newer_records(db, monkeypatch):
     seed_history(db)
-    old = datetime.utcnow() - timedelta(days=20)
+    old = utcnow() - timedelta(days=20)
     db.add(TaskRecord(id="old_active", type="agent", title="Old active", status="running", created_at=old, updated_at=old))
     db.add(TaskRecord(id="still_finishing", type="agent", status="interrupted", created_at=old, updated_at=old))
     db.commit()
@@ -85,7 +86,7 @@ def test_archive_epoch_changes_on_conversation_deletion_but_not_normal_progress(
 
 def test_sse_retains_completion_of_old_active_task_in_recent_history(db):
     seed_history(db)
-    old = datetime.utcnow() - timedelta(days=20)
+    old = utcnow() - timedelta(days=20)
     task = TaskRecord(id="old_completion", type="agent", status="running", created_at=old, updated_at=old)
     db.add(task)
     db.commit()
@@ -97,7 +98,7 @@ def test_sse_retains_completion_of_old_active_task_in_recent_history(db):
             first = await asyncio.wait_for(anext(stream), 2)
             snapshot = json.loads(first.split("data: ", 1)[1])
             assert any(row["id"] == task.id and row["status"] == "running" for row in snapshot["tasks"])
-            task.status, task.updated_at = "done", datetime.utcnow()
+            task.status, task.updated_at = "done", utcnow()
             db.commit()
             task_events.notify_tasks_changed()
             changed = await asyncio.wait_for(anext(stream), 2)

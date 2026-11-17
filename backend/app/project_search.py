@@ -89,7 +89,7 @@ def _pinned(scope, path):
         workspace.root_path(scope)
 
 
-def _run(root, req):
+def _arguments(req, *, stdin_label=None):
     args = [str(executable()), '--no-config', '--json', '--line-number', '--sort=path',
             '--threads=1', '--no-follow', '--no-mmap', '--encoding=none', '--color=never', '--crlf',
             '--no-ignore-parent', '--no-ignore-global', '--no-ignore-exclude', '--no-require-git',
@@ -110,7 +110,16 @@ def _run(root, req):
         args.append('--glob=!' + req.exclude)
     for directory in sorted(workspace.SKIP_DIRS):
         args += ['--iglob=!**/' + directory + '/**', '--iglob=!**/' + directory]
-    args += ['--regexp', req.query, '--', req.path or '.']
+    args += ['--regexp', req.query, '--', '-' if stdin_label is not None else req.path or '.']
+    return args
+
+
+def _run(root, req):
+    from .agent.search_snapshot_cache import active, run
+    snapshot = active(root=root, request=req)
+    if snapshot is not None:
+        return run(snapshot, req)
+    args = _arguments(req)
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('RIPGREP_', 'GIT_'))}
     reason = []
     try:
@@ -139,7 +148,67 @@ def _run(root, req):
         workspace.fail('无法启动本机搜索组件，请检查安装和权限', 503)
 
 
+def _run_stdin(data, req, label, budget):
+    """Run the real bounded engine over bytes, without filesystem traversal."""
+    import threading
+    args = _arguments(req, stdin_label=label)
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('RIPGREP_', 'GIT_'))}
+    reasons = []
+    try:
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen(args, env=env, stdin=subprocess.PIPE, stdout=output, stderr=errors,
+                creationflags=0x08000000 if os.name == 'nt' else 0)
+            def feed():
+                try:
+                    process.stdin.write(data)
+                    process.stdin.close()
+                except (BrokenPipeError, OSError, ValueError):
+                    pass
+            feeder = threading.Thread(target=feed, daemon=True)
+            feeder.start()
+            try:
+                while process.poll() is None:
+                    if output.tell() > budget.remaining or errors.tell() > 32768:
+                        reasons.append('搜索输出达到上限'); process.kill(); break
+                    if time.monotonic() >= budget.deadline:
+                        reasons.append('搜索达到时间上限'); process.kill(); break
+                    time.sleep(.01)
+                process.wait(timeout=5)
+            finally:
+                if process.poll() is None:
+                    process.kill(); process.wait()
+                feeder.join(timeout=1)
+                process.stdin.close()
+            output.seek(0); errors.seek(0)
+            raw = output.read(budget.remaining + 1)
+            if len(raw) > budget.remaining:
+                raw = raw[:budget.remaining]; reasons.append('搜索输出达到上限')
+            error = errors.read(2000).decode('utf-8', errors='replace').strip()
+            # ripgrep identifies stdin as <stdin>. Restore the trusted captured
+            # filename on JSON events; offsets and match data stay untouched.
+            records = []
+            for line in raw.splitlines():
+                try:
+                    event = json.loads(line)
+                except (ValueError, UnicodeError):
+                    if not reasons: raise
+                    break
+                if event.get('type') in ('begin', 'match', 'end'):
+                    event['data']['path'] = {'text': label}
+                encoded = json.dumps(event, ensure_ascii=False).encode()
+                if len(encoded) + 1 > budget.remaining:
+                    reasons.append('搜索输出达到上限'); break
+                budget.remaining -= len(encoded) + 1
+                records.append(encoded)
+            return b'\n'.join(records), process.returncode, error, reasons
+    except OSError:
+        workspace.fail('无法启动本机搜索组件，请检查安装和权限', 503)
+
+
 def _read(scope, path):
+    from .agent.search_snapshot_cache import active, source_bytes
+    if active(scope=scope) is not None:
+        return source_bytes(scope, path)
     target = workspace.scoped_path(scope, path)
     if not target.is_file():
         workspace.fail('搜索结果不再是普通文件', 409)
@@ -198,7 +267,7 @@ def _snippet(data, event):
             'parts': pieces, 'snippet_limited': left > 0 or right < len(text) or len(event['submatches']) > 64}
 
 
-def search(scope, req: SearchRequest):
+def _search(scope, req: SearchRequest):
     with _pinned(scope, req.path) as (root, directory):
         raw, code, error, reasons = _run(root, req)
         events = []
@@ -260,3 +329,11 @@ def search(scope, req: SearchRequest):
                 'files': len({m['path'] for m in matches}), 'snapshot': digest,
                 'next_offset': req.offset + PAGE_SIZE if req.offset + PAGE_SIZE < len(matches) else None,
                 'limited': bool(reasons), 'warnings': sorted(set(reasons))}
+
+
+def search(scope, req: SearchRequest):
+    from .agent.search_snapshot_cache import active, receipt
+    result = _search(scope, req)
+    if active(scope=scope, request=req) is not None:
+        receipt(result)
+    return result

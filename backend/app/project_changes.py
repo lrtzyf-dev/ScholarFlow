@@ -16,6 +16,7 @@ from . import workspace, workspace_write, run_store, task_events
 from .conversation_store import check_conversation_available, ConversationArchived, ConversationDeleted
 from .db import SessionLocal
 from .models import ProjectChange, TaskRecord, ForegroundRun
+from .timeutil import utcnow
 
 MAX_EDIT_BYTES = 256 * 1024
 _guard = threading.RLock()
@@ -195,7 +196,7 @@ def run_active(row):
 
 def _status(db, row, status, error=''):
     row.status, row.error = status, error
-    row.revision += 1; row.updated_at = datetime.utcnow()
+    row.revision += 1; row.updated_at = utcnow()
     db.commit()
     task_events.notify_tasks_changed()
 

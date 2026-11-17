@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "product_id": "scholarflow",
+  "product_name": "研序 ScholarFlow",
+  "version": "0.1.0",
+  "channel": "development",
+  "build_number": 3,
+  "data_contract": {
+    "generation": 1,
+    "checkpoint_protocol": 1,
+    "rollback_policy": "exact_schema_or_verified_compatible_snapshot"
+  },
+  "signing": {
+    "required_for_public_release": true,
+    "trusted_ed25519_keys": {}
+  }
+}

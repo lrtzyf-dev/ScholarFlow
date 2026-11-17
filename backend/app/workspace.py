@@ -86,7 +86,9 @@ def relative_path(raw, *, allow_internal=False):
     if not isinstance(raw, str) or len(raw) > 1024:
         fail("文件路径无效")
     value = raw.replace("\\", "/")
-    if not value:
+    # These exact aliases identify the already-supported empty/root path.
+    # Keep nested dot segments, parent traversal and absolute paths invalid.
+    if value in ("", ".", "./"):
         return ""
     parts = value.split("/")
     if (ntpath.isabs(raw) or ntpath.splitdrive(raw)[0] or
@@ -182,6 +184,7 @@ def read_text(scope, raw, *, offset=0, limit=PAGE_CHARS):
 def list_files(scope, raw="", *, offset=0, query=""):
     if type(offset) is not int or not 0 <= offset <= 100_000:
         fail("目录分页参数无效")
+    raw = relative_path(raw)
     directory = scoped_path(scope, raw)
     if not directory.is_dir():
         fail("请选择文件夹")

@@ -18,6 +18,7 @@ from app.db import _lightweight_migrations
 from app.llm import LLMResponse
 from app.main import app
 from app.models import Conversation, ForegroundRun, QARecord, TaskRecord
+from app.timeutil import utcnow
 
 client = TestClient(app)
 
@@ -53,6 +54,25 @@ def test_project_registration_and_pagination(project, db):
     assert len(first["entries"]) == 200 and second["next_offset"] is None
     assert len({f["path"] for f in first["entries"] + second["entries"]}) == 208
     assert workspace.list_files(scope(project), query="README")["entries"][0]["path"] == "README.md"
+
+
+@pytest.mark.parametrize("path", [".", "./", ".\\"])
+def test_directory_root_aliases_match_empty_path_without_becoming_write_targets(project, path):
+    from app import workspace_write
+    current = scope(project)
+    assert workspace.list_files(current, path) == workspace.list_files(current)
+    assert workspace.scoped_path(current, path) == Path(project.root_path)
+    with pytest.raises(HTTPException, match="普通文件"):
+        workspace_write.target(current, path)
+
+
+@pytest.mark.parametrize("path", [
+    "..", "../", "..\\", "./..", ".\\..", "/", "\\", "C:.", "C:\\",
+    "//server/share", "\\\\server\\share", "./src", "src/", "././",
+])
+def test_directory_root_aliases_do_not_normalize_unsafe_or_nested_paths(project, path):
+    with pytest.raises(HTTPException):
+        workspace.list_files(scope(project), path)
 
 
 @pytest.mark.parametrize("path", ["../secret.txt", "src/../../secret.txt", "C:\\secret.txt", "\\\\server\\share", "/etc/passwd", "README.md:secret", "src/../README.md", "src//note.txt", "src/./note.txt", "src./note.txt", "src/\x00file", ".git/config"])
@@ -138,7 +158,7 @@ def test_project_binding_immutable_and_deleted_archive_protected(project, db):
     assert client.put('/api/conversations/c_new/project', json={"project_id": other.id}).status_code == 409
     db.add(Conversation(id="c_started")); db.add(QARecord(conversation_id="c_started", question="before", answer="A")); db.commit()
     assert client.put('/api/conversations/c_started/project', json=body).status_code == 409
-    conv = db.get(Conversation, "c_workspace"); conv.archived_at = datetime.utcnow(); db.commit()
+    conv = db.get(Conversation, "c_workspace"); conv.archived_at = utcnow(); db.commit()
     assert client.put('/api/conversations/c_workspace/project', json=body).status_code == 409
     assert client.delete('/api/conversations/c_new').status_code == 200
     assert client.put('/api/conversations/c_new/project', json=body).status_code == 410
@@ -171,6 +191,11 @@ class CaptureModel:
     def __init__(self): self.messages = None
     def stream_chat(self, messages, tools=None):
         self.messages = deepcopy(messages)
+        if not any(message["role"] == "tool" for message in messages):
+            yield "final", LLMResponse("", [{"id": "register-plan", "name": "update_plan", "arguments": {
+                "steps": [{"title": "Review the admitted file snapshot", "phase": "read"},
+                          {"title": "Prepare the requested changes", "phase": "write"}]}}])
+            return
         yield "final", LLMResponse("Plan: inspect the local files before producing changes.")
 
 
@@ -185,8 +210,9 @@ def test_foreground_snapshot_injection_plan_handoff_and_fork(project, db, monkey
     (Path(project.root_path) / "src/note.txt").write_text("changed after admission")
     response = client.post('/api/chat/stream', json={**body, "run_id": body["id"]})
     assert response.status_code == 200 and 'event: answer' in response.text
-    assert "Nested file data" in model.messages[-1]["content"]
-    assert "changed after admission" not in model.messages[-1]["content"]
+    admitted_user = next(message["content"] for message in reversed(model.messages) if message["role"] == "user")
+    assert "Nested file data" in admitted_user
+    assert "changed after admission" not in admitted_user
     assert "Root instructions" in model.messages[0]["content"]
     db.expire_all()
     plan = db.query(QARecord).filter_by(conversation_id="c_workspace").one()
@@ -253,7 +279,7 @@ def test_project_chat_pagination_archives_and_metadata(project, db):
     pid = project.id
     for i in range(45):
         db.add(Conversation(id=f"c_page_{i}", title=f"Project chat {i}", project_id=pid, updated_at=datetime(2020, 1, 1) + timedelta(minutes=i)))
-    db.add(Conversation(id="c_archive", project_id=pid, archived_at=datetime.utcnow()))
+    db.add(Conversation(id="c_archive", project_id=pid, archived_at=utcnow()))
     db.add(Conversation(id="c_unscoped")); db.commit()
     first = client.get(f'/api/projects/{pid}/conversations').json()
     second = client.get(f'/api/projects/{pid}/conversations', params={"cursor": first["next_cursor"]}).json()

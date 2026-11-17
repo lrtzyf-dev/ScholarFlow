@@ -7,6 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .models import Conversation, DeletedConversation, QARecord
+from .timeutil import utcnow
 
 
 class ConversationDeleted(ValueError):
@@ -48,7 +49,7 @@ def materialize_history(db: Session, conversation_id: str) -> Conversation | Non
     if first is None:
         return None
     conv = Conversation(id=conversation_id, title=(first.question or "历史会话")[:200],
-                        created_at=first_at or datetime.utcnow(), updated_at=last_at or datetime.utcnow())
+                        created_at=first_at or utcnow(), updated_at=last_at or utcnow())
     db.add(conv)
     db.flush()
     return conv
@@ -61,7 +62,7 @@ def ensure_conversation(db: Session, conversation_id: str | None,
         return None
     check_conversation_available(db, conversation_id)
     conv = db.get(Conversation, conversation_id)
-    now = datetime.utcnow()
+    now = utcnow()
     if conv is None:
         conv = Conversation(
             id=conversation_id,
@@ -105,8 +106,8 @@ def backfill_conversations(db: Session) -> int:
         db.add(Conversation(
             id=cid,
             title=(first_q[0] if first_q and first_q[0] else "历史会话")[:200],
-            created_at=first_at or datetime.utcnow(),
-            updated_at=last_at or datetime.utcnow(),
+            created_at=first_at or utcnow(),
+            updated_at=last_at or utcnow(),
         ))
         created += 1
     if created:

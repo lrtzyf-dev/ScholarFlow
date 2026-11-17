@@ -12,6 +12,7 @@ token 仅在内存缓存（不落盘），进程重启后重新获取，避免�
 from __future__ import annotations
 
 import time
+import hashlib
 from dataclasses import dataclass
 
 import httpx
@@ -53,7 +54,7 @@ class OAuthTokenManager:
     ) -> str:
         if not token_url:
             raise OAuthError("缺少 token_url")
-        key = self._key(token_url, client_id, scope)
+        key = self._key(token_url, client_id, scope) + '|' + hashlib.sha256(client_secret.encode()).hexdigest()
         now = time.time()
         cached = self._cache.get(key)
         if not force and cached and cached.expires_at - EXPIRY_MARGIN > now:
@@ -70,11 +71,11 @@ class OAuthTokenManager:
             async with httpx.AsyncClient(timeout=TOKEN_TIMEOUT) as http:
                 resp = await http.post(token_url, data=data)
         except httpx.HTTPError as exc:
-            raise OAuthError(f"无法连接 token 端点：{type(exc).__name__}: {exc}") from exc
+            raise OAuthError(f"无法连接 token 端点：{type(exc).__name__}") from None
         if resp.status_code in (401, 403):
             raise OAuthError(f"认证失败（HTTP {resp.status_code}）：client_id/secret 无效")
         if resp.status_code >= 400:
-            raise OAuthError(f"token 请求被拒（HTTP {resp.status_code}）：{resp.text[:160]}")
+            raise OAuthError(f"token 请求被拒（HTTP {resp.status_code}）")
         try:
             payload = resp.json()
             token = payload["access_token"]

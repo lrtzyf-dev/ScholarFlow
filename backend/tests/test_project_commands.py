@@ -178,7 +178,10 @@ def test_scope_validation_rules_conflict_and_no_http_execution(project):
     value = commands.run(item['id'], run_id='command_run')
     assert value['status'] == 'conflict' and value['pid'] is None
     assert not (Path(project['root_path']) / 'must-not-exist').exists()
-    client = TestClient(app, base_url='http://127.0.0.1')
+    # Use the explicitly enabled in-process transport identity. A loopback
+    # Host paired with TestClient's synthetic peer is not an actual TCP peer.
+    client = TestClient(app)
+    assert client.get(f"/api/project-commands/{item['id']}").status_code == 200
     assert client.post(f"/api/project-commands/{item['id']}/run").status_code in (404, 405)
     assert client.post(f"/api/project-commands/{item['id']}/stop", headers={'Origin': 'https://evil.invalid'}).status_code == 403
 
@@ -256,7 +259,7 @@ while True: time.sleep(.1)
 '''
     env = {**os.environ, 'DATA_DIR': str(tmp_path), 'PYTHONIOENCODING': 'utf-8'}
     process = subprocess.Popen([sys.executable, '-c', script, str(tmp_path)], env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=0x08000000)
+        cwd=Path(__file__).resolve().parents[1], stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=0x08000000)
     try:
         until(lambda: (tmp_path / 'project/shell.pid').exists() or process.poll() is not None)
         assert process.poll() is None, process.communicate(timeout=3)
@@ -266,7 +269,7 @@ while True: time.sleep(.1)
         until(lambda: all(not psutil.pid_exists(pid) for pid in pids))
         restored = subprocess.run([sys.executable, '-c',
             "from app.db import init_db,SessionLocal; from app import project_commands as c; from app.models import ProjectCommand; init_db(); c.recover_interrupted(); db=SessionLocal(); row=db.query(ProjectCommand).one(); assert row.status=='interrupted' and 'CRASH_MARKER' in row.output; assert c.run(row.id,run_id=row.run_id)['status']=='interrupted'; print('RESTORED_WITHOUT_REPLAY')"],
-            env=env, capture_output=True, timeout=20)
+            env=env, cwd=Path(__file__).resolve().parents[1], capture_output=True, timeout=20)
         assert restored.returncode == 0 and b'RESTORED_WITHOUT_REPLAY' in restored.stdout, restored.stderr.decode('utf-8')
     finally:
         if process.poll() is None:

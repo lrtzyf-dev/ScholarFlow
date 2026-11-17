@@ -1,6 +1,16 @@
 """切块测试。"""
-from app.parsing import parse_pdf
+import pytest
+
+from app.parsing import InvalidPdfError, parse_pdf
 from app.pipeline.chunking import chunk_parsed
+
+
+def test_broken_pdf_raises_invalid_pdf_error(tmp_path):
+    # 损坏 PDF 在解析层即抛 InvalidPdfError（客户端错误），而非底层 PdfiumError
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.4" + bytes((i % 256 for i in range(200))))
+    with pytest.raises(InvalidPdfError):
+        parse_pdf(broken)
 
 
 def test_chunk_parsed_has_sections_and_refs(sample_pdf):

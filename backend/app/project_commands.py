@@ -22,6 +22,8 @@ from .db import SessionLocal
 from .models import ProjectCommand
 from .project_changes import available
 from .terminal_sessions import shell_command, shell_environment_dict
+from .timeutil import utcnow
+from . import execution_environments as environments
 
 MAX_OUTPUT_BYTES = 512 * 1024
 MODEL_OUTPUT_CHARS = 12000
@@ -62,7 +64,9 @@ def get(db, command_id):
 def info(row):
     return {key: getattr(row, key) for key in ('id', 'project_id', 'conversation_id', 'run_id', 'command',
         'path', 'cwd', 'summary', 'timeout_seconds', 'status', 'exit_code', 'pid', 'error', 'revision',
-        'attempt', 'previous_id')} | {'output_limited': bool(row.output_limited), 'total_chars': len(row.output),
+            'attempt', 'previous_id')} | {'output_limited': bool(row.output_limited), 'total_chars': len(row.output),
+        'execution_environment': (row.scope or {}).get('execution_environment', {'revision':0,**environments.DEFAULT}),
+        'execution_boundary': environments.boundary((row.scope or {}).get('execution_environment')),
         **{key: getattr(row, key).isoformat() if getattr(row, key) else None
            for key in ('created_at', 'updated_at', 'started_at', 'finished_at')}}
 
@@ -71,7 +75,7 @@ def result(row):
     return {**info(row), 'command_id': row.id, 'output': row.output[-MODEL_OUTPUT_CHARS:],
             'output_offset': max(0, len(row.output) - MODEL_OUTPUT_CHARS),
             'output_is_partial': bool(row.output_limited or len(row.output) > MODEL_OUTPUT_CHARS),
-            'execution_boundary': '当前用户权限的本机 PowerShell；初始目录受项目校验，进程不受项目沙箱限制'}
+            'execution_boundary': environments.boundary((row.scope or {}).get('execution_environment'))}
 
 
 def read_output(scope, cid, arguments):
@@ -95,7 +99,7 @@ def _set(db, row, **values):
     for key, value in values.items():
         setattr(row, key, value)
     row.revision += 1
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     db.commit()
 
 
@@ -112,6 +116,10 @@ def prepare(scope, cid, arguments, *, run_id, operation_key, retry=False):
     with _guard, run_store.coordinated(), SessionLocal() as db:
         available(db, cid)
         workspace.validate_scope(db, cid, scope)
+        from .runtime_context import current_runtime_config
+        binding = current_runtime_config()
+        frozen = binding.get('execution_environment') if binding else environments.snapshot_policy(db,cid)
+        environment = environments.verify_current(db,cid,frozen)
         cwd = workspace.scoped_path(scope, request.path)
         if not cwd.is_dir():
             workspace.fail('命令启动位置必须是项目内文件夹')
@@ -121,10 +129,14 @@ def prepare(scope, cid, arguments, *, run_id, operation_key, retry=False):
                 workspace.fail('同一执行步骤的命令或项目不一致，拒绝复用', 409)
             if previous.status != 'interrupted' or not retry:
                 return info(previous)
+            if ((previous.scope.get('execution_environment') or {}).get('mode') == 'container'
+                    and not environments.cleanup(previous.id, previous.project_id)):
+                workspace.fail('上次命令容器尚未确认清理，不能重试；请先在命令详情核对清理', 409)
             if previous.attempt >= 10:
                 workspace.fail('同一步骤重试已达 10 次，请核对项目后开始新任务', 409)
         saved_scope = {key: scope[key] for key in ('project_id', 'name', 'root_path', 'root_identity')}
         saved_scope['workspace_revision'] = scope.get('workspace_revision', 0)
+        saved_scope['execution_environment'] = environment
         saved_scope['rules'] = workspace.directory_rules(scope, [request.path + '/__command__' if request.path else '__command__'])
         row = ProjectCommand(project_id=scope['project_id'], conversation_id=cid, run_id=run_id,
             operation_key=operation_key, request_hash=fingerprint, scope=saved_scope,
@@ -139,15 +151,18 @@ def reject(command_id):
     with _guard, SessionLocal() as db:
         row = get(db, command_id)
         if row.status == 'proposed':
-            _set(db, row, status='rejected', finished_at=datetime.utcnow(), error='用户或策略拒绝了命令；未启动进程')
+            _set(db, row, status='rejected', finished_at=utcnow(), error='用户或策略拒绝了命令；未启动进程')
         return info(row)
 
 
 def recover_interrupted():
     with _guard, SessionLocal() as db:
         for row in db.query(ProjectCommand).filter_by(status='running').all():
-            _set(db, row, status='interrupted', finished_at=datetime.utcnow(),
-                 error='应用在命令完成确认前退出。文件或外部操作可能已生效，请核对后明确选择重试或跳过；未自动重放。')
+            container = (row.scope.get('execution_environment') or {}).get('mode') == 'container'
+            cleaned = environments.cleanup(row.id, row.project_id) if container else None
+            _set(db, row, status='interrupted', finished_at=utcnow(),
+                 error='应用在命令完成确认前退出。文件或外部操作可能已生效，请核对后明确选择重试或跳过；未自动重放。'
+                 + (' 已确认该命令容器已清理。' if cleaned else ' 尚未确认容器清理，请在命令详情中核对清理。' if container else ''))
 
 
 def stop(command_id):
@@ -228,12 +243,23 @@ def run(command_id, *, run_id):
             row = get(db, command_id)
             available(db, row.conversation_id)
             workspace.validate_scope(db, row.conversation_id, scope)
+            environment = environments.verify_current(db,row.conversation_id,scope.get('execution_environment'))
             root = workspace.root_path(scope)
             for index in range(len(Path(path).parts) + 1):
                 directory = root.joinpath(*Path(path).parts[:index])
                 handle = handles.enter_context(workspace_write._handle(directory, directory=True))
                 if workspace.handle_path(handle, directory) != directory:
                     workspace.fail('命令启动目录已变化，请重新审阅', 409)
+            if environment['mode'] == 'container' and environment.get('write_path'):
+                # Keep every output ancestor pinned until container completion;
+                # the daemon may not resolve the bind mount before Popen returns.
+                output_path = environment['write_path']
+                workspace.scoped_path(scope, output_path)
+                for index in range(1, len(Path(output_path).parts) + 1):
+                    directory = root.joinpath(*Path(output_path).parts[:index])
+                    handle = handles.enter_context(workspace_write._handle(directory, directory=True))
+                    if workspace.handle_path(handle, directory) != directory:
+                        workspace.fail('容器输出目录已变化，请重新审阅', 409)
             cwd = workspace.scoped_path(scope, path)
             rule_paths = [path + '/__command__' if path else '__command__']
             if workspace.directory_rules(scope, rule_paths) != scope['rules']:
@@ -244,16 +270,19 @@ def run(command_id, *, run_id):
                 return _finish(command_id, status, '', output, None, False)
             # Persist before spawn; a crash at any following point must never imply
             # that the command was not executed.
-            _set(db, row, status='running', started_at=datetime.utcnow())
+            argv = (environments.command_argv(environment,scope,path,command,command_id)
+                    if environment['mode']=='container' else _powershell(command))
+            _set(db, row, status='running', started_at=utcnow())
             env = shell_environment_dict()
             env.update({'PYTHONIOENCODING': 'utf-8', 'PYTHONUNBUFFERED': '1', 'CI': 'true'})
-            process = subprocess.Popen(_powershell(command), cwd=str(cwd), env=env,
+            process = subprocess.Popen(argv, cwd=str(cwd), env=env,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 bufsize=0, creationflags=0x08000004)
             with git_process.contain(process, purpose='项目命令'):
                 workspace.root_path(scope)
                 _set(db, row, pid=process.pid)
-                handles.close()
+                if environment['mode'] != 'container':
+                    handles.close()
                 reader = threading.Thread(target=_reader, args=(process.stdout, chunks), daemon=True)
                 reader.start()
                 started = last_save = time.monotonic()
@@ -312,6 +341,10 @@ def run(command_id, *, run_id):
                 process.kill(); process.wait(timeout=5)
             if process.stdout:
                 process.stdout.close()
+        if process and (scope.get('execution_environment') or {}).get('mode')=='container':
+            if not environments.cleanup(command_id,scope['project_id']):
+                status='interrupted'
+                error='容器运行结果或清理状态尚未确认。请启动本机 Docker 引擎后清理此命令容器；未自动重复命令。'
         with _guard:
             _running.pop(command_id, None)
     return _finish(command_id, status, error, output, exit_code, limited)
@@ -321,5 +354,5 @@ def _finish(command_id, status, error, output, exit_code, limited):
     with _guard, SessionLocal() as db:
         row = get(db, command_id)
         _set(db, row, status=status, error=error, output=output, exit_code=exit_code,
-             output_limited=int(limited), finished_at=datetime.utcnow())
+             output_limited=int(limited), finished_at=utcnow())
         return result(row)

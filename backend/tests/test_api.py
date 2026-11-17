@@ -7,6 +7,7 @@ from reportlab.pdfgen import canvas
 
 from app.main import app
 from app.models import Conversation, QARecord
+from app.timeutil import utcnow
 
 client = TestClient(app)
 
@@ -14,12 +15,12 @@ client = TestClient(app)
 def test_conversation_fork_preserves_usage_and_memory_flags(db):
     """分叉会话时保留原消息的记忆开关与 token 快照。"""
     source_id = "c_fork_source"
-    db.add(Conversation(id=source_id, title="源会话", created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
+    db.add(Conversation(id=source_id, title="源会话", created_at=utcnow(), updated_at=utcnow()))
     db.add(QARecord(
         id="qa_fork_source", conversation_id=source_id, question="问题", answer="回答",
         evidence=[], claims=[], trace=[], skills=[], refusal=0, latency_ms=12,
         in_memory=0, usage={"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
-        created_at=datetime.utcnow(),
+        created_at=utcnow(),
     ))
     db.commit()
 
@@ -67,6 +68,15 @@ def test_upload_and_parse_flow(tmp_path):
     # 论文列表
     r3 = client.get("/api/papers")
     assert any(p["id"] == paper["id"] for p in r3.json())
+
+
+def test_upload_broken_pdf_returns_400():
+    # 以 %PDF 开头但内容损坏：解析层抛 InvalidPdfError，API 应返回 400 而非 500
+    broken = b"%PDF-1.4" + bytes((i % 256 for i in range(200)))
+    r = client.post("/api/papers/upload",
+                    files={"file": ("broken.pdf", broken, "application/pdf")})
+    assert r.status_code == 400, r.text
+    assert "损坏" in r.json()["detail"]
 
 
 def test_upload_duplicate_is_deduped(tmp_path):

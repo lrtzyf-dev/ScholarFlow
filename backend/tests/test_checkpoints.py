@@ -247,7 +247,12 @@ def test_resume_preserves_old_work_and_restart_creates_new_record(db, monkeypatc
     assert response.json()['id'] != task.id
     db.refresh(task)
     assert task.status == 'cancelled'
-    assert task.checkpoint == state.snapshot()
+    restored = AgentState.model_validate(task.checkpoint)
+    assert restored.attempt_id and restored.writer_token
+    restored.attempt_id = restored.writer_token = None
+    restored.runtime_config = None
+    restored.source_attempt_id = None
+    assert restored.snapshot() == state.snapshot()
 
 
 def test_old_or_invalid_checkpoint_is_explicitly_unavailable(db):
@@ -264,7 +269,7 @@ def test_old_or_invalid_checkpoint_is_explicitly_unavailable(db):
 
 
 def test_unknown_operation_resume_api_requires_resolution(db):
-    state = AgentState(question='Question', phase='tools', calls=[{'id': 'write', 'name': 'write_file', 'arguments': {}}], pending_operation={
+    state = AgentState(question='Question', conversation_id='c_checkpoint', phase='tools', calls=[{'id': 'write', 'name': 'write_file', 'arguments': {}}], pending_operation={
         'key': 'tool/0/0', 'kind': 'tool', 'name': 'write_file', 'arguments': {'path': 'report.md'}})
     task = new_task(db, checkpoint=state.snapshot())
     response = TestClient(app).post(f'/api/tasks/{task.id}/resume')
@@ -288,6 +293,11 @@ def test_checkpoint_column_migrates_legacy_task_table_idempotently(monkeypatch):
 def test_shutdown_wakes_approval_and_resume_requests_new_permission(db, monkeypatch):
     model, calls = Model(guarded=True), []
     monkeypatch.setattr(loop, 'get_llm', lambda: model)
+    monkeypatch.setattr(loop, 'get_tool_specs', lambda: [{
+        'name': 'mcp__custom__write',
+        'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}},
+                       'required': ['query']},
+    }])
     monkeypatch.setattr(loop, 'execute_tool', evidence_tool(calls))
     task = task_runner.start_agent_task(db, 'Question', None, [], 'c_checkpoint')
     def wait_approval():
@@ -344,7 +354,12 @@ def test_shutdown_timeout_keeps_running_work_and_deletion_guard(db, monkeypatch)
     db.add(Conversation(id='c_checkpoint', title='Shutdown test'))
     db.commit()
     started = task_runner.start_agent_task(db, 'Question', None, [], 'c_checkpoint')
-    assert entered.wait(2)
+    # This synchronizes a background worker; it is not a two-second latency
+    # benchmark. Allow shared-machine contention while preserving diagnostics.
+    if not entered.wait(10):
+        db.expire_all()
+        stalled = db.get(TaskRecord, started['id'])
+        pytest.fail(f"worker did not enter tool: status={stalled.status}, error={stalled.error}, events={stalled.events}")
     try:
         task_runner.shutdown_background_tasks(timeout=0.01)
         assert started['id'] in task_runner.running_task_ids()

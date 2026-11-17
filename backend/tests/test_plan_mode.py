@@ -4,14 +4,16 @@ import threading
 from copy import deepcopy
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from app import approval_store, cancel_store, run_store, task_runner
+from app import approval_store, cancel_store, run_store, task_runner, workspace
 from app.agent import loop
 from app.agent.checkpoint import AgentState
 from app.db import _lightweight_migrations
-from app.execution_mode import PlanConflict
+from app.execution_mode import PlanConflict, PLAN_RESPONSE_TOOL_NAME
+from app.agent.active_context import CONTEXT_TOOL
 from app.llm import LLMResponse, MockLLM
 from app.main import app
 from app.models import Conversation, ForegroundRun, QARecord, TaskRecord
@@ -27,29 +29,53 @@ def isolated(monkeypatch):
     monkeypatch.setattr(task_runner, '_shutting_down', threading.Event())
     monkeypatch.setattr(cancel_store, '_flags', {})
     monkeypatch.setattr(approval_store, '_pending', {})
-    monkeypatch.setattr(loop, 'make_plan', lambda *a: [dict(title='Read and verify', phase='search', status='pending')])
+    monkeypatch.setattr(loop, 'make_plan', lambda *a: pytest.fail('ordinary setup must not synthesize a plan'))
     monkeypatch.setattr(loop.settings, 'memory_recall', False)
 
 
 class Model:
-    def __init__(self, names=()):
+    def __init__(self, names=(), *, register_plan=False):
         self.names, self.specs, self.messages = names, [], []
+        self.register_plan = register_plan
 
     def stream_chat(self, messages, tools=None):
         self.specs = deepcopy(tools)
         self.messages = deepcopy(messages)
         if self.names and not any(m['role'] == 'tool' for m in messages):
             yield 'final', LLMResponse('', [dict(id=f'c{i}', name=name, arguments={}) for i, name in enumerate(self.names)])
+        elif self.register_plan and not any(m.get('tool_call_id') == 'plan_registration' for m in messages):
+            yield 'final', LLMResponse('', [dict(id='plan_registration', name='update_plan', arguments={
+                'steps': [dict(title='Create report after review', phase='write',
+                               tool_name='edit_project_file', tool_arguments={'path': 'report.md'}),
+                          dict(title='Verify output after review', phase='audit')],
+            })])
         else:
             yield 'final', LLMResponse('Plan: inspect inputs, then produce and verify the output. Nothing has been executed.')
 
 
+@pytest.fixture
+def plan_workspace(db, tmp_path):
+    root = tmp_path / 'planning-project'
+    root.mkdir()
+    response = client.post('/api/projects', json={'path': str(root), 'name': 'Planning project'})
+    assert response.status_code == 200, response.text
+    project_id = response.json()['id']
+    response = client.put('/api/conversations/c_plan/project', json={'project_id': project_id})
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    conversation = db.get(Conversation, 'c_plan')
+    assert conversation.project_id == project_id and conversation.workspace_revision == 0
+    return workspace.capture(db, 'c_plan', project_id=project_id)
+
+
 @pytest.mark.parametrize('approval_mode', ['read_only', 'auto', 'full_access'])
-def test_plan_filters_specs_and_blocks_injected_calls_before_hooks_or_approval(db, monkeypatch, approval_mode):
-    names = ['list_papers', 'spawn_subagent', 'import_paper', 'mcp__custom__search', 'mcp__custom__write']
-    model, invoked = Model(names), []
+def test_plan_filters_specs_and_blocks_injected_calls_before_hooks_or_approval(db, monkeypatch, approval_mode, plan_workspace):
+    names = ['list_papers', 'list_project_worktrees', 'review_project_worktree_removal', 'review_project_worktree_archive', 'spawn_subagent', 'import_paper', 'mcp__custom__search', 'mcp__custom__write']
+    from app.agent.tools import TOOL_SPECS, execute_tool as real_execute_tool
+    model, invoked = Model(names, register_plan=True), []
     monkeypatch.setattr(loop, 'get_llm', lambda: model)
-    monkeypatch.setattr(loop, 'get_tool_specs', lambda: [dict(name=n) for n in names])
+    monkeypatch.setattr(loop, 'get_tool_specs', lambda: [dict(name=n) for n in names] + [
+        deepcopy(next(spec for spec in TOOL_SPECS if spec['name'] == 'update_plan'))])
     monkeypatch.setattr(loop.settings, 'approval_mode', approval_mode)
     from app import mcp_policy
     monkeypatch.setattr(mcp_policy, 'approval_for', lambda name: 'never')
@@ -57,17 +83,78 @@ def test_plan_filters_specs_and_blocks_injected_calls_before_hooks_or_approval(d
         pytest.fail('planning must never invoke command hooks or request write approval')
     monkeypatch.setattr(loop.hooks_store, 'run_hooks', forbidden)
     monkeypatch.setattr(approval_store, 'create', forbidden)
-    monkeypatch.setattr(loop, 'execute_tool', lambda db, name, args, **kw: invoked.append(name) or json.dumps({'papers': []}))
-    events = list(loop.run_agent(db, 'Create a report', conversation_id='c_plan', execution_mode='plan'))
-    assert {s['name'] for s in model.specs} == {'list_papers'}
-    assert invoked == ['list_papers']
-    assert {e['name'] for k, e in events if k == 'policy_block'} == set(names[1:])
+    monkeypatch.setattr(loop, 'execute_tool', lambda db, name, args, **kw:
+        real_execute_tool(db, name, args, **kw) if name == 'update_plan'
+        else invoked.append(name) or json.dumps({'papers': []}))
+    # Keep capability filtering behind the real, persisted project boundary.
+    events = list(loop.run_agent(db, 'Create a report', conversation_id='c_plan', execution_mode='plan',
+        workspace=plan_workspace))
+    assert {s['name'] for s in model.specs} == {'update_plan', 'list_papers', 'list_project_worktrees', 'review_project_worktree_removal', 'review_project_worktree_archive', PLAN_RESPONSE_TOOL_NAME, CONTEXT_TOOL}
+    assert invoked == ['list_papers', 'list_project_worktrees', 'review_project_worktree_removal', 'review_project_worktree_archive']
+    assert {e['name'] for k, e in events if k == 'policy_block'} == set(names[4:])
     assert '[SCHOLARFLOW_PLAN_MODE]' in model.messages[0]['content']
     record = db.query(QARecord).one()
     assert record.execution_mode == 'plan' and not record.plan_run_id
-    assert all(s['status'] == 'pending' for s in record.plan_steps)
+    assert record.plan_steps and all(s['status'] == 'pending' for s in record.plan_steps)
     answer = next(e for k, e in events if k == 'answer')
     assert answer['execution_mode'] == 'plan' and answer['plan_steps'] == record.plan_steps
+    assert answer['outcome'] == 'planned' and answer['completed'] is False
+
+
+@pytest.mark.parametrize('resuming', [False, True], ids=['fresh', 'checkpoint'])
+@pytest.mark.parametrize('invalid_binding', [
+    'missing_scope', 'empty_scope', 'unlinked_conversation', 'project_id',
+    'root_path', 'root_identity', 'workspace_revision',
+])
+def test_plan_rejects_invalid_workspace_before_model_hooks_or_approval(
+        db, monkeypatch, plan_workspace, invalid_binding, resuming):
+    scope, cid = deepcopy(plan_workspace), 'c_plan'
+    if invalid_binding == 'missing_scope':
+        scope = None
+    elif invalid_binding == 'empty_scope':
+        scope = {}
+    elif invalid_binding == 'unlinked_conversation':
+        cid = 'c_unlinked_plan'
+        db.add(Conversation(id=cid))
+        db.commit()
+    elif invalid_binding == 'workspace_revision':
+        scope[invalid_binding] += 1
+    else:
+        scope[invalid_binding] += '-forged'
+
+    def forbidden(*a, **k):
+        pytest.fail('invalid workspace reached model, tool, hook, approval, or checkpoint persistence')
+    monkeypatch.setattr(loop, 'get_llm', forbidden)
+    monkeypatch.setattr(loop, 'execute_tool', forbidden)
+    monkeypatch.setattr(loop.hooks_store, 'run_hooks', forbidden)
+    monkeypatch.setattr(approval_store, 'create', forbidden)
+    checkpoint = (AgentState(question='Plan task', conversation_id=cid,
+        execution_mode='plan', workspace=scope).snapshot() if resuming else None)
+    with pytest.raises(HTTPException) as rejected:
+        list(loop.run_agent(db, 'Plan task', conversation_id=cid, execution_mode='plan',
+            workspace=scope, checkpoint=checkpoint, save_checkpoint=forbidden))
+    assert rejected.value.status_code == 409
+    assert db.query(QARecord).count() == 0
+
+
+def test_plan_without_update_plan_is_honest_partial_and_cannot_be_approved(db, monkeypatch):
+    model = Model()
+    monkeypatch.setattr(loop, 'get_llm', lambda: model)
+    monkeypatch.setattr(loop, 'execute_tool', lambda *a, **kw: pytest.fail('text-only planning cannot execute tools'))
+    events = list(loop.run_agent(db, '为研究报告制定可执行计划', conversation_id='c_empty_plan', execution_mode='plan'))
+    answer = next(event for kind, event in events if kind == 'answer')
+    record = db.query(QARecord).one()
+    assert answer['completed'] is False and answer['outcome'] == 'partial'
+    assert answer['stop_reason'] == 'plan_not_created' and answer['plan_steps'] == []
+    assert answer['incomplete_steps'][0]['reason'] == 'plan_not_created'
+    assert '尚未形成可供确认执行的结构化计划' in record.answer
+    assert record.plan_steps is None and record.execution_mode == 'plan'
+    assert not any(kind in ('plan', 'todo_update') for kind, _ in events)
+    response = client.post('/api/foreground-runs', json={
+        'id': 'chat_empty_plan_execution', 'conversation_id': 'c_empty_plan',
+        'question': '执行计划', 'reviewed_plan_id': record.id,
+    })
+    assert response.status_code == 409
 
 
 def test_plan_checkpoint_restores_restrictions_and_rejects_mode_escalation(db, monkeypatch):

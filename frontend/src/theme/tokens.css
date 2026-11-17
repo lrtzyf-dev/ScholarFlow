@@ -1,0 +1,33 @@
+:root {
+  --font-sans: "SF Inter", "SF Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-serif: Georgia, "Noto Serif CJK SC", "Songti SC", serif;
+  --font-mono: "SFMono-Regular", Consolas, monospace;
+  --text: #1B2338; --muted: #66748C; --faint: #8794AA;
+  --surface: #FFFFFF; --subtle: #F8FAFD; --sidebar: #EDF1F7;
+  --hover: #E6ECF8; --selected: #E4EBFF; --border: #E2E8F2;
+  --accent: #355CF6; --accent-soft: #EEF3FF; --primary: #355CF6; --on-primary: #FFFFFF;
+  --primary-hover: #284EE2; --primary-pressed: #2143C7;
+  --focus-ring: #355CF6; --focus-offset: 3px; --control-border: #CED8EA;
+  --nav-text: #38435C; --nav-icon: #5E6B83; --nav-line: #D7E0EF;
+  --user-bg: #F0F4FF; --source-surface: #F8FAFD;
+  --paper-surface: #FFFFFF; --paper-text: #252D40; --paper-muted: #69758A; --paper-highlight: #E8EEFF;
+  --success: #2D7A5F; --success-bg: #F1F8F5; --success-border: #D7EADF;
+  --warning: #986E24; --warning-bg: #FFF9EF; --warning-border: #F1E3C4;
+  --danger: #B24750; --danger-bg: #FFF4F5; --danger-border: #F3DDE0;
+  --overlay: #17223D3D; --tooltip-bg: #25324D; --on-tooltip: #FFFFFF;
+  --radius-sm: 5px; --radius: 8px; --radius-lg: 12px; --radius-xl: 16px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-7: 28px; --space-8: 32px; --space-10: 40px;
+  --text-xs: 12px; --text-sm: 13px; --text-base: 14px; --text-body: 15px;
+  --sidebar-width: 244px; --topbar-height: 56px; --inspector-width: 320px;
+  --font-size-title: 24px; --font-size-base: var(--text-base); --font-size-sm: var(--text-sm); --font-size-xs: var(--text-xs); --radius-xs: var(--radius-sm);
+  --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+  --leading-ui: 1.5; --leading-body: 1.8; --leading-title: 1.4;
+  --input-border: #D9DEE7; --input-hover: #B8C1CF; --input-focus: #65738B;
+  --input-focus-shadow: 0 0 0 1px #65738B;
+  --composer-radius: 12px; --composer-min-height: 48px; --composer-max-height: 180px;
+  --composer-action: #28364D; --composer-action-hover: #17253B;
+  --shadow-menu: 0 6px 28px #1B315A14;
+  --motion-fast: 120ms; --motion-default: 160ms; --motion-ease: cubic-bezier(.2,.7,.2,1);
+  --transition: var(--motion-default) var(--motion-ease);
+}

@@ -1,132 +1,101 @@
 # 研序 ScholarFlow
 
-> 全流程科研助手：细粒度 PDF 解析 · 混合检索（BM25 + 稠密向量）· 抗幻觉溯源问答 · 引用图谱 · 版式原文定位。
-> 面向"传智杯 AI 大模型创新应用挑战赛"科研助手 Agent 赛道（个人赛）。
+**研序 ScholarFlow** 由张祎凡独立开发，是面向个人研究者的本地科研工作台，用于整理论文、检索原文证据，并围绕文献进行带来源的问答。项目原创代码由作者独立完成，著作权归作者所有。主要界面为简体中文。
 
-## 开箱即用
+> 本仓库提供源代码和开发说明，不包含安装包、用户数据库、个人文献、聊天记录或 API 密钥。
 
-- **零 API Key 可跑**：未配置 Key 时自动使用离线脚本模型（Mock LLM，会真实执行"检索 → 取证 → 带引用作答"）与本地确定性向量；全链路可用。
-- **填入 Key 即用真实大模型**：应用内「模型与设置」页支持阿里百炼、硅基流动、DeepSeek 及任意 OpenAI 兼容端点（含本地 vLLM），保存后热切换。
-- **Windows 桌面应用**：FastAPI 后端 + Vue3 前端同源托管，经 pywebview 打包为 Windows EXE，无需另装环境。每个交互式终端使用独立辅助进程，原生终端异常不会直接阻塞主服务。
-- **内置 MCP 服务器（开箱即用）**：软件本体以 in-process 方式自带一个 MCP 服务器，含 4 个免 Key 工具——arXiv 检索、Semantic Scholar 检索、Crossref 检索、网页抓取；随软件本体运行，无需 Python/uvx 等外部环境，启动即自动连接。
-- **内置技能库（Skill Library）**：自带 5 个科研技能（论文检索、三遍阅读、文献综述、学术写作、引用格式），Agent 会根据需求自动调用对应技能；也可在设置页查看完整操作指南。
-- **可扩展 MCP Host**：除内置服务器外，还可在设置页接入任意自定义 MCP（Model Context Protocol）服务器，外部工具自动并入 Agent 工具集；支持 stdio 与 streamable-http 两种传输。
+[English overview](#english) · [功能与边界](#功能与边界) · [本地运行](#本地运行) · [上传到 GitHub](docs/github-publish.md) · [许可证](#许可证)
 
-## 直接运行（已打包）
+## 功能
 
-1. 双击 `ScholarFlow\ScholarFlow.exe`。
-2. 文献库为空时点击「加载示例论文」一键载入两篇示例，或点击「上传 PDF」导入自己的论文。
-3. 在「抗幻觉问答」中提问，答案附带 `[^eN]` 引用；点击引用可跳转到「版式阅读」并在原文位置高亮蓝框。
+- PDF 文献导入、文本解析、混合检索和版式阅读。
+- 基于检索证据回答研究问题；回答中的引用可以打开相应来源位置。
+- 支持兼容的大模型接口，可在应用设置中配置；本地离线演示需要显式启用。
+- 文献比较、关系图、研究写作辅助，以及基于本地项目文件的工作流。
+- 提供 Windows 桌面运行方式，也可在本机浏览器中启动开发预览。
 
-数据保存在 `%APPDATA%\ScholarFlow`（数据库、向量、原文、配置）。
+## 功能与边界
 
-当前桌面验收包：`verification/研序ScholarFlow-桌面验收版-20261031-同提交改动迁移.zip`。与根目录历史便携包分开维护，本批步骤见 [同提交改动迁移验收说明](verification/同提交改动迁移验收-20261031.md)。仅开发 Windows 桌面端，验收尺寸为 1440×900 和 1100×700。
+项目由本地服务与桌面界面组成，主要面向 Windows x64 开发和运行。
 
-项目“工作树”页支持“切换当前会话”、“携带 Git 改动迁移”和“携带分支与提交迁移”。改动迁移要求相同 HEAD、目标干净；完整 Git 状态迁移要求来源有分支、目标为分离 HEAD，分支会交给目标，来源转为目标原提交的分离 HEAD，不隐式合并分歧提交。两种模式都保留暂存/未暂存/未跟踪的字节与状态，备份后转移并清理来源，完成才切换会话；中断可核对继续或审阅撤回。活动任务/终端、目标改动和忽略规则冲突会阻止迁移。详情见 [同提交改动迁移验收说明](verification/同提交改动迁移验收-20261031.md)。
+未配置云模型凭据时，应用保持“模型待配置”；这不会自动切换为真实大模型或离线 Mock。可以在设置页主动开启离线演示模式，或在本地环境文件中将 `LLM_DEMO_MODE=true`。离线演示根据检索到的原文生成摘录式输出，不等同于真实模型回答。
 
-真实项目工作区：在侧栏“项目”添加本地文件夹，或在聊天输入区打开“项目文件”；原生桌面提供文件夹选择器，浏览器预览可粘贴绝对路径。项目内新建会话或关联未开始的会话后，可浏览目录、预览 UTF-8 文本，并通过复选框或 `@` 引用文件。每轮最多 8 个文件，每个文件先载入 8,000 字符；模型可用只读项目工具分页继续。单文件限制 2 MB，符号链接和目录联接不作为上下文读取。
+Python 项目代码按 MIT License 授权；第三方库、字体及附带工具保留各自许可证，见 [`LICENSES.md`](LICENSES.md)。源码发布不代表所有未来回答都正确。使用者应核对来源原文。模型服务商的 API 请求依其服务条款处理。
 
-项目文件的“搜索”页使用随包提供的 ripgrep 递归检索 UTF-8 内容，支持大小写、整词、正则、目录、包含/排除文件及隐藏/忽略文件选项。结果按文件分组并高亮，可打开到匹配位置或引用文件；旧文件及旧分页会提示重新搜索。搜索条件跨端口重启恢复，模型在执行与计划模式也可调用只读内容搜索。每次最多 2,000 个匹配行、目录深度 64，单文件最多 2 MB；达到时间/输出限制会标注不完整。不读取链接、二进制和依赖内部目录，尚无批量替换或文件变动自动刷新。
+桌面应用把文献和会话数据保存在本机。开发模式默认数据目录为 `backend/data`；已安装 Windows 版本使用当前 Windows 用户的数据目录。Windows API 密钥保护绑定当前用户。项目终端与文件访问使用当前操作系统用户权限，不提供 OS 级进程沙箱。
 
-项目根目录固定；已有会话可在同一来源项目和托管工作树间审阅切换，其他项目请新建会话。`/init` 在当前项目创建 `AGENTS.md`，保留已有文件；根目录至引用文件所在目录依次载入规范，同目录优先采用非空 `AGENTS.override.md`。前台、后台、计划和执行检查点保存项目及引用文件快照；执行已审阅计划时，如引用文件或适用规范已修改，会提示重新规划。UTF-8 小文件支持修改、新建、删除、差异审阅、应用与反向变更；写入前核对文件和目录身份，进程中断后部分写入需人工处理。
+## 本地运行（Windows PowerShell）
 
-“版本控制”页提供真实 Git 状态、差异、提交记录、已有工作树识别，以及手动暂存、取消暂存和提交。操作先保存具体审阅，确认前校验分支、索引和相关内容；提交只包含已暂存内容，并尊重本机 hooks/签名配置。操作记录、提交说明及未确认请求保存在本机，响应丢失可恢复；进程中断的结果需核对，不自动重放。单次限制 1,000 路径、256 KiB 差异和每个待暂存文件 2 MB，不支持特殊合并/变基、子模块及受限制目录。需要另装 Git；模型可通过 git_project_write 发起暂存、取消暂存和提交，聊天及后台任务都可审阅差异并按审批策略执行；计划模式禁止写入。模型操作不能通过手动确认接口绕过审批，拒绝或审批期间停止/重启会取消旧提案；已完成提交的结果恢复不会重复执行。尚无远程同步。工作树管理见下；与任意外部 Git 并发操作不提供完全隔离。
+需要 Python 3.11 或更高版本、Node.js 22.12 或更高版本（或 Node.js 24）、npm。桌面原生功能以 Windows x64 为主要支持目标。
 
-“工作树”页可从本地引用或提交创建独立目录，默认分离 HEAD，也可填写新分支；不复制来源目录的未提交文件。每个目录注册为独立项目，通过“在此新建会话”开始开发，原会话保持原项目。创建请求、草稿与操作记录保存在本机，响应丢失可查询同一请求。仅可移除本应用创建且文件完全干净的工作树，存在未提交、未跟踪、被忽略文件或活动任务/终端时拒绝移除；移除前保存提交引用，恢复到原目录并保留项目与会话记录。“审阅归档”可保存未提交/未跟踪文件为 Git 快照，另存原暂存版本；被忽略文件仅保存在本机 ZIP，恢复时按原始字节还原。支持备份下载、校验和中断核对；原分支不推进，恢复后本地修改包含在快照提交中。最多 10,000 个普通文件、512 MiB，含忽略文件；不支持链接、子模块、嵌套仓库和特殊 Git 状态。工作树页现可切换当前会话和返回来源目录，保留文字/图片及原项目编辑草稿，清空相对文件引用；旧计划和检查点在返回后也不能重用。切换不搬运 Git 改动；改动迁移与完整分支/提交迁移已实现，归档快照历史可查看并清理非当前快照；仍缺自动快照保留策略、模型工作树工具和快照内容对比；文件和暂存区独立不等于操作系统沙箱。
+1. 创建并激活 Python 虚拟环境，然后安装后端依赖：
 
-聊天输入区的终端图标可展开项目终端，使用 Windows 自带 PowerShell 或命令提示符，在项目根目录启动真实交互进程。支持多个标签、拖动或键盘调整面板高度、复制选区、粘贴、中断、结束和关闭。收起或刷新页面保留同一进程，断线重连回放有限输出，旧终端查询不会再次混入命令；创建响应丢失可重试同一请求。每项目最多 4 个、全局最多 12 个会话，输出缓存最多 512 Ki 字符；断开超过 10 分钟会结束进程，应用退出或崩溃会结束其普通子进程树。后端重启需新建终端，尚未实现持久屏幕快照。项目聊天的模型命令工具会先生成持久记录并按审批策略等待确认，保存退出码和有界输出；项目面板的“命令”页可查看历史、跟随输出、分页回查、停止和下载记录。命令与手动终端都使用当前用户权限，可访问项目外和网络，不提供进程沙箱。
+   ```powershell
+   py -3 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   python -m pip install -r backend/requirements.txt
+   Copy-Item backend/.env.example backend/.env
+   ```
 
-回答区支持常用语言的代码高亮和单块复制、行内/独立公式、表格复制与 UTF-8 CSV 导出。公式字体随应用打包，无需联网；未知代码语言保留为纯文本，无效公式保留可读内容。复制失败会提示并允许重试，兼容剪贴板保留原输入焦点与选区。CSV 对公式形态的非数字单元格加文本前缀，避免表格软件直接执行；仍未实现长结果折叠和可配置代码主题。
+2. 在第一个终端启动后端：
 
-同一数据目录只允许一个后端：再次启动 EXE 会请求显示已有窗口，不会启动第二个后端或误中断原任务。独立 `DATA_DIR` 可以同时运行；直接启动后端也受相同的操作系统文件锁保护。启动/退出收尾期间会等待，超时后提示稍后重试；不会根据残留进程号或发现文件强行接管。若原进程异常退出，下一次启动可取得已释放的锁并恢复检查点。
+   ```powershell
+   Set-Location backend
+   python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+   ```
 
-长会话会自动将最近四轮之前的可用历史增量压缩，摘要及处理进度保存在本机，重启后复用。聊天工具条的“会话记忆”可查看摘要、来源、用量，重新生成或停止；`/compact` 可直接整理待压缩内容。原始聊天与证据不会删除，Agent 可回查当前会话原文并重新编号引用。关闭使用记忆后不注入历史；未进入记忆的记录不会被摘要或回查。离线与模型失败时显示提取式摘录，摘要始终有损，实际模型的长期事实保留质量仍待验证。
+3. 在第二个终端安装前端依赖并启动 Vite：
 
-聊天输入区可切换“执行 / 计划”，也支持 `/plan <任务>`。计划模式仅开放已核对的读取工具，并停用命令 Hooks；审阅计划后点击“执行此计划”启动新轮次。模式与计划上下文保存在本机，跨窗口阻止重复提交，失败后可明确重试并保留草稿。这是应用工具层限制，不是操作系统沙箱；离线模式提供明确标注的示例计划。
+   ```powershell
+   Set-Location frontend
+   npm ci
+   npm run dev
+   ```
 
-桌面侧栏支持按日期分组、直接新建、固定会话和按更新/创建时间排序。固定与排序保存在本机数据库，可跨桌面重启恢复；历史列表独立滚动。
+4. 打开 Vite 输出的网址（通常是 `http://localhost:5173`）。前端会把 `/api` 请求代理至本机 `127.0.0.1:8765`。
 
-后台任务页支持全部/进行中/历史视图与游标分页。活动任务独立查询，较早创建的运行任务和待审批任务不会被新历史挤出；线程收尾期间保留停止入口。
+需要真实模型时，在应用“模型设置”页配置接口；也可以编辑本地 `backend/.env`。请勿把真实密钥提交到 GitHub。只想体验合成样例时，在设置页选择“离线演示”，或将本地 `LLM_DEMO_MODE` 设为 `true`。
 
-后台任务支持从已保存检查点继续，保留模型上下文、工具结果、证据和进度。“从头重新运行”会新建任务并保留原记录。若程序在工具或钩子执行中退出，需在任务页检查执行结果后选择重试或跳过；旧任务没有检查点时仅支持从头运行。
+如果要使用桌面窗口开发模式，请查看 [`docs/windows-development.md`](docs/windows-development.md)。构建可分发安装器需要独立准备 Windows 原生工具链；在解决 `proxy-tools 0.1.0` 许可证标记冲突并完成发行核查前，本仓库不提供可分发安装器构建承诺。
 
-## 从源码运行
+## 测试与检查
 
-### 后端
-
-```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pytest                                         # 运行全部单元测试
-uvicorn app.main:app --host 127.0.0.1 --port 8765
-```
-
-### 前端
+在仓库根目录运行前端检查：
 
 ```powershell
-cd frontend
-npm install
-npm run dev                                    # http://localhost:5173 ，/api 代理到 127.0.0.1:8765
+Set-Location frontend
+npm ci
+npm run typecheck
+npm run build
+npm run test:markdown
+node --experimental-strip-types --test tests/chatRunObserver.test.mjs
 ```
 
-### 打包 EXE
+运行后端测试：
 
 ```powershell
-cd backend
-.\.venv\Scripts\pyinstaller.exe ..\desktop\scholarflow.spec --noconfirm
-# 产物：backend\dist\ScholarFlow\ScholarFlow.exe
+python -m pip install -r backend/requirements.txt
+python -m pytest backend/tests -q
 ```
 
-## 功能模块
-
-| 模块 | 说明 |
-| --- | --- |
-| 文献库 | PDF 上传、解析状态、一键加载示例 |
-| 版式阅读 | pdf.js 原生渲染，证据 bbox 高亮定位 |
-| 抗幻觉问答 | Agent 循环（规划/工具/反思/重试），SSE 流式输出，引用闸门校验，无证据拒答 |
-| 引用图谱 | 按参考文献与库内论文连边，cytoscape 可视化 |
-| 模型与设置 | 多服务商预设、OpenAI 兼容端点、Key 持久化 |
-| 内置 MCP | in-process 自带 4 个免 Key 工具（arXiv / Semantic Scholar / Crossref / 网页抓取），启动即连 |
-| 内置技能库 | 5 个科研技能（检索/阅读/综述/写作/引用），Agent 按需自动调用，可查看指南 |
-| 自定义 MCP | 接入/启停外部 MCP 服务器，自动发现工具并并入 Agent（stdio / streamable-http） |
+仓库包含 GitHub Actions 基础检查工作流，分别运行后端定向测试与前端类型检查/构建。
 
 ## 目录
 
-```
-backend/
-  app/
-    config.py          配置（config.json 持久化、mock/api 自动切换、打包数据目录）
-    llm.py             LLM 抽象（OpenAI 兼容客户端 / 离线脚本模型）
-    models.py          数据表（papers/chunks/references/qa_records/tasks）
-    parsing/           PDF 解析（pdfplumber 实现，MinerU 为可插拔位）
-    pipeline/          切块、本地/API 向量、向量库、入库索引
-    rag/               混合检索 + RRF、引用闸门、版本 diff
-    agent/             工具注册、Agent 主循环（Planner/Executor/Critic）
-    mcp_builtin.py     内置 MCP 服务器（4 个免 Key 工具，in-process）
-    mcp_bridge.py      MCP Host（内置 + 自定义 stdio/http 服务器）
-    skill_store.py     内置技能库加载（app/skills）
-    skills/            5 个科研技能（SKILL.md）
-    tasks/             无 Redis 时同步降级执行
-    api/               papers / chat(SSE) / graph / settings / mcp / skills / samples
-  tests/               pytest（切块、引用、检索、diff、API）
-frontend/
-  src/views/            Library / Reader / Chat / Graph / Settings
-desktop/                launcher.py（pywebview）、scholarflow.spec、图标
-```
+- `backend/app`：API、文献解析、检索、Agent 与本地存储。
+- `backend/tests`：后端自动化测试。
+- `frontend/src`：Vue 3 / TypeScript 界面；`frontend/public/licenses`：字体许可文本。
+- `desktop`：Windows 桌面启动器、PyInstaller 与 Inno Setup 构建源码，以及 ripgrep 上游工具许可。
+- `docs`：架构、隐私、开发和第三方许可说明。
 
-## 许可
+## 许可证
 
-本软件为**专有软件**，版权所有 (c) 2026 张祎凡，详见根目录 `LICENSE`。
-第三方开源组件（MIT / BSD / Apache-2.0）声明见 `LICENSES.md`。
+本项目源代码按 [MIT License](LICENSE) 授权。第三方组件与字体继续遵循各自的许可证。具体说明及尚待澄清的第三方依赖事项见 [`LICENSES.md`](LICENSES.md)。
 
-## 团队信息
+## English
 
-本项目为个人赛作品，开发者/参赛者：**张祎凡（Zhang Yifan）**。当前仓库不包含个人 API Key、密码或评审账号；如大赛系统要求联系方式或评审账号，将通过报名系统的安全字段单独提交。
+ScholarFlow is a local research workspace for organizing papers, searching source passages, and answering literature questions with clickable citations. The primary interface is Simplified Chinese.
 
-## 代码规范与 Git 记录
+The repository contains source code, not a prebuilt installer or user data. It is primarily developed for Windows x64. The Python project source is licensed under MIT; third-party libraries, fonts, and bundled tools keep their own licenses. Cloud-model credentials are optional and must be configured explicitly. Offline demo mode is opt-in and does not represent a real LLM response.
 
-后端按 FastAPI 路由、Agent、解析、检索、数据和桌面状态分层；前端按视图、组件和 API 模块组织。Python 代码使用类型标注、模块文档字符串和明确的异常边界，Vue/TypeScript 代码按单一职责拆分组件，关键状态转换保留注释和测试。测试入口为 `backend/` 下的 pytest 与 `frontend/tests/` 下的桌面专项脚本。
-
-本地仓库已初始化为 `main` 分支并保留提交历史。当前提交包括 `chore: prepare ScholarFlow competition submission` 和 `chore: exclude generated submission archives`；把仓库推送到 GitHub/Gitee 后即可继续累积真实开发记录。生成的 EXE、前端 dist、运行时数据库和压缩包按 `.gitignore` 排除，EXE 作为 Release 附件上传。
+See the sections above for setup and test commands. Review [`LICENSES.md`](LICENSES.md) before redistributing a desktop build.

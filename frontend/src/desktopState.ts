@@ -2,29 +2,63 @@ import { computed, ref, shallowRef } from 'vue'
 import type { GitRequest } from './projectGitApi'
 import { emptySearchOptions, type SearchOptions } from './projectSearchApi'
 
-export interface DraftImage { media_type: string; data: string }
-export interface ReadingPosition { following: boolean; top: number; anchor_id: string | null; offset: number }
-export interface EditorDraft { project_id: string; path: string; operation: 'update' | 'create'; sha256: string | null; content: string }
+export interface DraftImage {
+  media_type: string
+  data: string
+}
+export interface ReadingPosition {
+  following: boolean
+  top: number
+  anchor_id: string | null
+  offset: number
+}
+export interface EditorDraft {
+  project_id: string
+  path: string
+  operation: 'update' | 'create'
+  sha256: string | null
+  content: string
+}
 export interface ConversationState {
+  source_revision_ids?: string[]
   workspace_revision?: number
   editor?: EditorDraft | null
   file_paths?: string[]
-  text: string; execution_mode: 'execute' | 'plan'; paper_id: string | null; skills: string[]; images: DraftImage[]; reading: ReadingPosition
+  text: string
+  execution_mode: 'execute' | 'plan'
+  paper_id: string | null
+  skills: string[]
+  images: DraftImage[]
+  reading: ReadingPosition
 }
 type Status = 'loading' | 'saved' | 'saving' | 'pending' | 'error' | 'conflict' | 'deleted'
-interface Snapshot<T> { revision: number; value: T }
+interface Snapshot<T> {
+  revision: number
+  value: T
+}
 
 function localRead(key: string) {
-  try { return localStorage.getItem(key) } catch { return null }
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
 }
 function localWrite(key: string, value: string) {
   try {
     if (value) localStorage.setItem(key, value)
     else localStorage.removeItem(key)
-  } catch { /* The database status remains the source of truth. */ }
+  } catch {
+    /* The database status remains the source of truth. */
+  }
 }
 function validSnapshot<T>(data: any): data is Snapshot<T> {
-  return Number.isInteger(data?.revision) && data.revision >= 0 && data.value && typeof data.value === 'object'
+  return (
+    Number.isInteger(data?.revision) &&
+    data.revision >= 0 &&
+    data.value &&
+    typeof data.value === 'object'
+  )
 }
 
 // One serialized writer per document, surviving route changes. CAS also protects
@@ -44,31 +78,51 @@ class Document<T> {
   private remote: Snapshot<T> | null = null
   private forgotten = false
 
-  get persisted() { return this.revision > 0 }
-  get savedRevision() { return this.revision }
+  get persisted() {
+    return this.revision > 0
+  }
+  get savedRevision() {
+    return this.revision
+  }
 
-  constructor(readonly path: string, initial: T, private selection = false) {
+  constructor(
+    readonly path: string,
+    initial: T,
+    private selection = false
+  ) {
     this.value = shallowRef<T>(initial)
     this.ready = this.load()
   }
 
-  private async request(method: string, payload?: unknown, keepalive = false): Promise<Snapshot<T>> {
+  private async request(
+    method: string,
+    payload?: unknown,
+    keepalive = false
+  ): Promise<Snapshot<T>> {
     const body = payload === undefined ? undefined : JSON.stringify(payload)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
     try {
       const response = await fetch(`/api/desktop-state/${this.path}`, {
-        method, headers: { 'Content-Type': 'application/json' }, body,
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
         // Browsers cap the combined keepalive budget at 64 KiB. Large images
         // are saved while the window is open, with an acknowledged status.
         keepalive: keepalive && new Blob([body || '']).size < 60_000,
         signal: controller.signal,
       })
       const data = await response.json()
-      if (!response.ok) throw Object.assign(new Error(data.detail?.message || data.detail || '保存失败'), { status: response.status, snapshot: data.detail })
+      if (!response.ok)
+        throw Object.assign(new Error(data.detail?.message || data.detail || '保存失败'), {
+          status: response.status,
+          snapshot: data.detail,
+        })
       if (!validSnapshot<T>(data)) throw new Error('本机存储返回无效数据')
       return data
-    } finally { clearTimeout(timeout) }
+    } finally {
+      clearTimeout(timeout)
+    }
   }
 
   private async load() {
@@ -80,7 +134,10 @@ class Document<T> {
       if (this.dirty && saved.revision > 0 && !this.selection) {
         this.remote = saved
         this.status.value = 'conflict'
-      } else if ((saved.revision > 0 || (saved.value as any).workspace_revision > 0) && !this.dirty) {
+      } else if (
+        (saved.revision > 0 || (saved.value as any).workspace_revision > 0) &&
+        !this.dirty
+      ) {
         this.value.value = saved.value
         this.restored.value++
         this.status.value = 'saved'
@@ -101,13 +158,25 @@ class Document<T> {
     this.dirty = true
     if (!['error', 'conflict', 'loading'].includes(this.status.value)) this.status.value = 'pending'
     clearTimeout(this.timer)
-    this.timer = setTimeout(() => { void this.flush() }, 250)
+    this.timer = setTimeout(() => {
+      void this.flush()
+    }, 250)
   }
 
   async flush(keepalive = false): Promise<void> {
     clearTimeout(this.timer)
-    if (this.writing) { await this.writing; if (this.dirty) await this.flush(keepalive); return }
-    if (!this.loaded || !this.dirty || this.forgotten || ['error', 'conflict', 'deleted'].includes(this.status.value)) return
+    if (this.writing) {
+      await this.writing
+      if (this.dirty) await this.flush(keepalive)
+      return
+    }
+    if (
+      !this.loaded ||
+      !this.dirty ||
+      this.forgotten ||
+      ['error', 'conflict', 'deleted'].includes(this.status.value)
+    )
+      return
     this.writing = this.save(keepalive)
     await this.writing
     this.writing = null
@@ -156,13 +225,21 @@ class Document<T> {
   async resolveConflict(keepLocal: boolean) {
     if (!this.remote) return
     this.revision = this.remote.revision
-    if (!keepLocal) { this.value.value = this.remote.value; this.dirty = false; this.restored.value++ }
-    else if (this.path.startsWith('conversations/')) {
-      const local = this.value.value as ConversationState, remote = this.remote.value as ConversationState
+    if (!keepLocal) {
+      this.value.value = this.remote.value
+      this.dirty = false
+      this.restored.value++
+    } else if (this.path.startsWith('conversations/')) {
+      const local = this.value.value as ConversationState,
+        remote = this.remote.value as ConversationState
       if ((local.workspace_revision || 0) !== (remote.workspace_revision || 0)) {
         // Keep the chosen text/editor draft, but never reinterpret relative
         // references from an earlier checkout. The editor has an explicit pid.
-        this.value.value = { ...local, workspace_revision: remote.workspace_revision || 0, file_paths: remote.file_paths || [] } as T
+        this.value.value = {
+          ...local,
+          workspace_revision: remote.workspace_revision || 0,
+          file_paths: remote.file_paths || [],
+        } as T
         this.restored.value++
       }
     }
@@ -180,12 +257,17 @@ class Document<T> {
       if (this.forgotten || saved.revision < this.revision) return
       if (this.dirty) {
         if (saved.revision > this.revision) {
-          this.remote = saved; this.status.value = 'conflict'
+          this.remote = saved
+          this.status.value = 'conflict'
           this.error.value = '另一窗口已更新草稿或切换工作目录，请核对要保留的内容'
         }
       } else {
-        this.revision = saved.revision; this.value.value = saved.value
-        this.loaded = true; this.remote = null; this.status.value = 'saved'; this.error.value = ''
+        this.revision = saved.revision
+        this.value.value = saved.value
+        this.loaded = true
+        this.remote = null
+        this.status.value = 'saved'
+        this.error.value = ''
         this.restored.value++
       }
     } catch (error: any) {
@@ -194,7 +276,11 @@ class Document<T> {
     }
   }
 
-  forget() { this.forgotten = true; this.dirty = false; clearTimeout(this.timer) }
+  forget() {
+    this.forgotten = true
+    this.dirty = false
+    clearTimeout(this.timer)
+  }
 }
 
 const documents = new Map<string, Document<ConversationState>>()
@@ -204,7 +290,12 @@ const worktreeDocuments = new Map<string, Document<import('./worktreeApi').Workt
 export function projectWorktreeState(id: string) {
   let doc = worktreeDocuments.get(id)
   if (!doc) {
-    doc = new Document(`projects/${encodeURIComponent(id)}/worktrees`, { name: '', ref: 'HEAD', branch: '', pending: null } as import('./worktreeApi').WorktreeDraft)
+    doc = new Document(`projects/${encodeURIComponent(id)}/worktrees`, {
+      name: '',
+      ref: 'HEAD',
+      branch: '',
+      pending: null,
+    } as import('./worktreeApi').WorktreeDraft)
     worktreeDocuments.set(id, doc)
   }
   return doc
@@ -220,21 +311,42 @@ export function projectSearchState(id: string) {
 export function projectGitState(id: string) {
   let doc = gitDocuments.get(id)
   if (!doc) {
-    doc = new Document(`projects/${encodeURIComponent(id)}/git`, { message: '', pending: null } as { message: string; pending: GitRequest | null })
+    doc = new Document(`projects/${encodeURIComponent(id)}/git`, { message: '', pending: null } as {
+      message: string
+      pending: GitRequest | null
+    })
     gitDocuments.set(id, doc)
   }
   return doc
 }
 const documentList = shallowRef<Document<ConversationState>[]>([])
-const selection = new Document<{ conversation_id: string | null }>('selection', { conversation_id: null }, true)
-export const sidebarState = new Document<{ sort: 'updated_at' | 'created_at' }>('sidebar', { sort: 'updated_at' }, true)
+const selection = new Document<{ conversation_id: string | null }>(
+  'selection',
+  { conversation_id: null },
+  true
+)
+export const sidebarState = new Document<{ sort: 'updated_at' | 'created_at' }>(
+  'sidebar',
+  { sort: 'updated_at' },
+  true
+)
 export const activeConversationId = ref('')
-export const desktopStateIssues = computed(() => documentList.value.filter((doc) => ['error', 'conflict'].includes(doc.status.value)))
+export const desktopStateIssues = computed(() =>
+  documentList.value.filter((doc) => ['error', 'conflict'].includes(doc.status.value))
+)
 export const selectionStatus = selection.status
 export const retrySelection = () => selection.retry()
 
 export function emptyConversationState(): ConversationState {
-  return { text: '', execution_mode: 'execute', paper_id: null, skills: [], images: [], reading: { following: true, top: 0, anchor_id: null, offset: 0 } }
+  return {
+    text: '',
+    execution_mode: 'execute',
+    paper_id: null,
+    skills: [],
+    images: [],
+    source_revision_ids: [],
+    reading: { following: true, top: 0, anchor_id: null, offset: 0 },
+  }
 }
 export function conversationState(id: string) {
   let doc = documents.get(id)
@@ -247,12 +359,15 @@ export function conversationState(id: string) {
     // Import same-origin legacy text only into a document that has never been
     // saved. Existing database drafts always win over the compatibility cache.
     void doc.ready.then(() => {
-      if (doc!.status.value === 'saved' && doc!.value.value === initial && initial.text) doc!.update(initial)
+      if (doc!.status.value === 'saved' && doc!.value.value === initial && initial.text)
+        doc!.update(initial)
     })
   }
   return doc
 }
-export function cacheDraftText(id: string, text: string) { localWrite(`scholarflow_draft:${id}`, text) }
+export function cacheDraftText(id: string, text: string) {
+  localWrite(`scholarflow_draft:${id}`, text)
+}
 export function selectConversation(id: string) {
   activeConversationId.value = id
   localWrite('scholarflow_conversation_id', id)
@@ -264,15 +379,32 @@ export function forgetConversation(id: string) {
   documents.delete(id)
   documentList.value = [...documents.values()]
   cacheDraftText(id, '')
+  try {
+    const prefixes = [`scholarflow:artifact-draft:${id}:`]
+    for (let index = localStorage.length - 1; index >= 0; index--) {
+      const key = localStorage.key(index)
+      if (key && prefixes.some(prefix => key.startsWith(prefix))) localStorage.removeItem(key)
+    }
+  } catch { /* The server still removes the authoritative conversation data. */ }
 }
 export function flushDesktopState(keepalive = false) {
-  return Promise.all([selection.flush(keepalive), sidebarState.flush(keepalive), ...[...documents.values()].map((doc) => doc.flush(keepalive)), ...[...gitDocuments.values()].map(doc => doc.flush(keepalive)), ...[...searchDocuments.values()].map(doc => doc.flush(keepalive)), ...[...worktreeDocuments.values()].map(doc => doc.flush(keepalive))])
+  return Promise.all([
+    selection.flush(keepalive),
+    sidebarState.flush(keepalive),
+    ...[...documents.values()].map((doc) => doc.flush(keepalive)),
+    ...[...gitDocuments.values()].map((doc) => doc.flush(keepalive)),
+    ...[...searchDocuments.values()].map((doc) => doc.flush(keepalive)),
+    ...[...worktreeDocuments.values()].map((doc) => doc.flush(keepalive)),
+  ])
 }
 export async function initializeDesktopState() {
   await selection.ready
   const legacy = localRead('scholarflow_conversation_id')
   const saved = selection.value.value.conversation_id
-  let id = saved || (!selection.persisted && legacy) || `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  let id =
+    saved ||
+    (!selection.persisted && legacy) ||
+    `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   activeConversationId.value = id
   await conversationState(id).ready
   if (conversationState(id).status.value === 'deleted') {
@@ -281,6 +413,15 @@ export async function initializeDesktopState() {
     await conversationState(id).ready
   }
   selectConversation(id)
-  window.addEventListener('pagehide', () => { void flushDesktopState(true) })
-  window.addEventListener('online', () => { void selection.retry(); void sidebarState.retry(); for (const doc of documents.values()) void doc.retry(); for (const doc of gitDocuments.values()) void doc.retry(); for (const doc of searchDocuments.values()) void doc.retry(); for (const doc of worktreeDocuments.values()) void doc.retry() })
+  window.addEventListener('pagehide', () => {
+    void flushDesktopState(true)
+  })
+  window.addEventListener('online', () => {
+    void selection.retry()
+    void sidebarState.retry()
+    for (const doc of documents.values()) void doc.retry()
+    for (const doc of gitDocuments.values()) void doc.retry()
+    for (const doc of searchDocuments.values()) void doc.retry()
+    for (const doc of worktreeDocuments.values()) void doc.retry()
+  })
 }

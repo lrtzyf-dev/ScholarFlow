@@ -34,7 +34,9 @@ def write_probe(*args, **kwargs):
 
 
 loop.get_llm = lambda: Model()
-loop.make_plan = lambda *args: [dict(title='Write', phase='write', status='pending')]
+loop.get_tool_specs = lambda: [dict(name='write_probe', parameters={
+    'type': 'object', 'properties': {}, 'additionalProperties': False})]
+loop.tool_risk = lambda name: 'safe'
 loop.execute_tool = write_probe
 loop.hooks_store.run_hooks = lambda *a, **k: dict(ran=0, blocked=False, feedback='')
 loop.settings.approval_mode = 'full_access'

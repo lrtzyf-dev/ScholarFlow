@@ -25,6 +25,7 @@ class PendingApproval:
         self.decision: str | None = None  # approve / deny
         self.scope: str = "once"  # once / session
         self.created = time.time()
+        self.refresh_policy = None
 
     def to_request(self) -> dict:
         return {
@@ -92,10 +93,39 @@ def list_for_run(run_id: str) -> list[dict]:
                 if p.run_id == run_id and p.decision is None]
 
 
+def pending_run_counts() -> dict[str, int]:
+    """Small public list projection; never leaks approval arguments."""
+    counts = {}
+    with _lock:
+        for pending in _pending.values():
+            if pending.run_id and pending.decision is None:
+                counts[pending.run_id] = counts.get(pending.run_id, 0) + 1
+    return counts
+
+
 def wait(approval_id: str, timeout: float = DEFAULT_TIMEOUT) -> PendingApproval:
     p = _pending.get(approval_id)
+    from .run_timing import approval_wait
+    with approval_wait(p.run_id if p else None):
+        return _wait(p, timeout)
+
+
+def _wait(p, timeout):
     if p is not None:
-        p.event.wait(timeout)
+        if p.refresh_policy is None:
+            p.event.wait(timeout)
+        else:
+            deadline = time.monotonic() + timeout
+            while not p.event.wait(min(0.25, max(0, deadline - time.monotonic()))):
+                if p.refresh_policy():
+                    with _lock:
+                        if p.decision is None:
+                            p.decision = "recheck"
+                            p.scope = "once"
+                            p.event.set()
+                    break
+                if time.monotonic() >= deadline:
+                    break
     return p
 
 

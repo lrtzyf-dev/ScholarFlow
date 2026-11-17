@@ -13,6 +13,16 @@ from __future__ import annotations
 import os
 import socket
 import sys
+from pathlib import Path
+
+# Resolve application imports before both normal startup and terminal-worker
+# dispatch. Neither mode may rely on the caller's current directory/PYTHONPATH.
+if not getattr(sys, 'frozen', False):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'backend'))
+
+if __name__ == '__main__' and sys.argv[1:2] == ['--upgrade-health-check']:
+    from app.release_health import main as upgrade_health_main
+    raise SystemExit(upgrade_health_main(sys.argv[2:]))
 
 # This private mode shares the packaged runtime, not the desktop service or UI.
 # Dispatch before importing webview/uvicorn and claiming a data-directory lock.
@@ -24,12 +34,14 @@ if __name__ == '__main__' and sys.argv[1:] == ['--terminal-worker']:
 import threading
 import time
 import urllib.request
-from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 import webview
 
-APP_TITLE = "研序 ScholarFlow"
+from app.release_info import definition as release_definition
+_release = release_definition()
+APP_TITLE = f"{_release['product_name']} · {_release['version']}"
 
 
 def _free_port() -> int:
@@ -49,7 +61,7 @@ def _icon_path() -> str | None:
     return str(icon) if icon.exists() else None
 
 
-def _wait_ready(port: int, server, timeout: float = 30.0, *, thread=None) -> bool:
+def _wait_ready(port: int, server, timeout: float = 30.0, *, thread=None, launch_secret=None) -> bool:
     deadline = time.monotonic() + timeout
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     while time.monotonic() < deadline:
@@ -59,7 +71,9 @@ def _wait_ready(port: int, server, timeout: float = 30.0, *, thread=None) -> boo
             time.sleep(0.1)
             continue
         try:
-            with opener.open(f"http://127.0.0.1:{port}/api/health", timeout=1) as r:
+            request = urllib.request.Request(f"http://127.0.0.1:{port}/api/health",
+                headers={"Authorization": "Bearer " + launch_secret} if launch_secret else {})
+            with opener.open(request, timeout=1) as r:
                 if r.status == 200:
                     return True
         except OSError:
@@ -70,6 +84,7 @@ def _wait_ready(port: int, server, timeout: float = 30.0, *, thread=None) -> boo
 def _write_crash(exc_type, exc, tb) -> None:
     """窗口模式下没有控制台，把崩溃信息写入数据目录。"""
     import traceback
+    import re
 
     try:
         from app.config import DATA_DIR
@@ -79,7 +94,9 @@ def _write_crash(exc_type, exc, tb) -> None:
         log = Path.home() / "ScholarFlow_startup_error.log"
     try:
         with open(log, "a", encoding="utf-8") as f:
-            f.write("".join(traceback.format_exception(exc_type, exc, tb)))
+            rendered = "".join(traceback.format_exception(exc_type, exc, tb))
+            rendered = re.sub(r'(#sf-launch=|__sf_ticket=|ScholarFlow )([A-Za-z0-9_-]{64})', r'\1[redacted]', rendered)
+            f.write(rendered)
             f.write("\n")
     except OSError:
         pass
@@ -140,43 +157,83 @@ def _show_busy(service=False):
 
 
 class DesktopApi:
-    def __init__(self):
+    def __init__(self, origin=None, *, session=None):
         self._window = None
         self._picker_lock = threading.Lock()
+        self._origin = origin
+        self._session = session
+        self._state_lock = threading.Lock()
+        self._document_epoch = 0
+        self._closed = False
+
+    def _before_load(self):
+        with self._state_lock:
+            self._document_epoch += 1
+
+    def _closing(self):
+        with self._state_lock:
+            self._closed = True
+            self._document_epoch += 1
+
+    def _trusted_page(self):
+        try:
+            if self._window is None or self._origin is None:
+                return False
+            with self._state_lock:
+                if self._closed:
+                    return False
+            if self._session is not None and not self._session.active:
+                return False
+            current = urlsplit(self._window.get_current_url() or '')
+            return (current.scheme == 'http' and not current.username and not current.password
+                    and current.scheme + '://' + current.netloc == self._origin)
+        except Exception:
+            return False
 
     def choose_project_folder(self):
-        if self._window is None or not self._picker_lock.acquire(blocking=False):
+        if not self._trusted_page() or not self._picker_lock.acquire(blocking=False):
             return None
         try:
+            with self._state_lock:
+                epoch = self._document_epoch
             selected = self._window.create_file_dialog(webview.FileDialog.FOLDER, allow_multiple=False)
-            return str(selected[0]) if selected else None
+            if not selected or not self._trusted_page():
+                return None
+            with self._state_lock:
+                return str(selected[0]) if epoch == self._document_epoch and not self._closed else None
         finally:
             self._picker_lock.release()
 
 
 def main() -> int:
     _install_crash_log()
-    # 开发模式下把 backend 加入模块搜索路径
-    if not getattr(sys, "frozen", False):
-        backend_dir = Path(__file__).resolve().parent.parent / "backend"
-        if backend_dir.exists():
-            sys.path.insert(0, str(backend_dir))
+    from app.runtime_owner import owner, claim_or_activate, RuntimeInUse
 
-    from app.runtime_owner import owner, claim_or_activate
-
-    admission = claim_or_activate(owner)
+    try:
+        admission = claim_or_activate(owner)
+    except RuntimeInUse as exc:
+        if os.name == 'nt':
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, str(exc), APP_TITLE, 0x30)
+        else:
+            print(str(exc), file=sys.stderr)
+        return 2
     if admission == "activated":
         return 0
     if admission != "primary":
         _show_busy(admission == "service_busy")
         return 2
 
-    server = server_thread = None
+    server = server_thread = local_session = None
     try:
         # Reserve before importing the app, migrating data or recovering tasks.
         from app.main import app as fastapi_app
 
         port = _free_port()
+        from app.local_session import instance_session
+        local_session = instance_session
+        origin = f"http://127.0.0.1:{port}"
+        launch_secret = local_session.enable(origin)
         owner.set_desktop_port(port)
         server = uvicorn.Server(uvicorn.Config(
             fastapi_app, host="127.0.0.1", port=port, log_level="warning",
@@ -184,21 +241,27 @@ def main() -> int:
         ))
         server_thread = threading.Thread(target=server.run, daemon=True)
         server_thread.start()
-        if not _wait_ready(port, server, thread=server_thread):
+        if not _wait_ready(port, server, thread=server_thread, launch_secret=launch_secret):
             print("研序服务启动失败", file=sys.stderr)
             return 1
 
-        desktop_api = DesktopApi()
+        # pywebview disables native downloads unless explicitly enabled.
+        webview.settings['ALLOW_DOWNLOADS'] = True
+        desktop_api = DesktopApi(origin, session=local_session)
         window = webview.create_window(
-            APP_TITLE, f"http://127.0.0.1:{port}", width=1440, height=900,
+            APP_TITLE, origin + '/#sf-launch=' + launch_secret, width=1440, height=900,
             min_size=(1100, 700), text_select=True, js_api=desktop_api,
         )
         desktop_api._window = window
+        window.events.before_load += desktop_api._before_load
+        window.events.closing += desktop_api._closing
         owner.set_activation(WindowActivation(window))
         window.events.closing += owner.stopping
         webview.start(icon=_icon_path())
         return 0
     finally:
+        if local_session is not None:
+            local_session.close()
         owner.stopping()
         run_store = sys.modules.get("app.run_store")
         task_runner = sys.modules.get("app.task_runner")

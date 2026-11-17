@@ -1,71 +1,73 @@
 /* ===================================================================
-   研序 ScholarFlow · 基于 Octop Design System v3（--fn- 令牌）移植
-   浅色主题，品牌色采用 tech 蓝色系并对齐 Harmony #0A59F7
+   研序 ScholarFlow · ScholarFlow-source 冷瓷白 / 钴蓝主题
+   --fn-* 为现有业务组件保留的兼容令牌。
    =================================================================== */
 :root {
   /* ---- 背景 ---- */
   --fn-bg-primary: #ffffff;
-  --fn-bg-secondary: #f7f8fa;
-  --fn-bg-tertiary: #f0f1f3;
-  --fn-bg-layout: #f5f6f8;
-  --fn-bg-code: #f5f6f8;
-  --fn-bg-hover: rgba(10, 89, 247, 0.05);
-  --fn-bg-active: rgba(10, 89, 247, 0.09);
-  --fn-bg-brand: rgba(10, 89, 247, 0.06);
+  --fn-bg-secondary: #f8fafd;
+  --fn-bg-tertiary: #edf1f7;
+  --fn-bg-layout: #ffffff;
+  --fn-bg-code: #f8fafd;
+  --fn-bg-hover: #e6ecf8;
+  --fn-bg-active: #e4ebff;
+  --fn-bg-brand: #eef3ff;
   --fn-bg-brand-light: #eef3ff;
 
   /* ---- 文本 ---- */
-  --fn-text-primary: #111827;
-  --fn-text-secondary: #4b5563;
-  --fn-text-tertiary: #9ca3af;
+  --fn-text-primary: #1b2338;
+  --fn-text-secondary: #66748c;
+  --fn-text-tertiary: #8794aa;
   --fn-text-quaternary: #d1d5db;
-  --fn-text-placeholder: #c0c5ce;
+  --fn-text-placeholder: #8794aa;
+  --fn-text-muted: #66748c;
 
   /* ---- 边框 ---- */
-  --fn-border-primary: #e5e7eb;
-  --fn-border-secondary: #f3f4f6;
-  --fn-border-input: #d1d5db;
-  --fn-border-strong: #d1d5db;
+  --fn-border-primary: #e2e8f2;
+  --fn-border-secondary: #edf1f7;
+  --fn-border-input: #ced8ea;
+  --fn-border-strong: #ced8ea;
+  --fn-border: var(--fn-border-primary);
 
   /* ---- 品牌 ---- */
-  --fn-brand: #0a59f7;
-  --fn-brand-hover: #0948d6;
-  --fn-brand-active: #073cb4;
-  --fn-brand-text: #0a59f7;
+  --fn-brand: #355cf6;
+  --fn-brand-hover: #284ee2;
+  --fn-brand-active: #2143c7;
+  --fn-brand-text: #355cf6;
   --fn-on-brand: #ffffff;
-  --fn-brand-shadow: rgba(10, 89, 247, 0.18);
+  --fn-brand-shadow: rgba(53, 92, 246, 0.12);
 
   /* ---- 语义色 ---- */
-  --fn-success: #10b981;
-  --fn-success-bg: #ecfdf5;
-  --fn-success-border: #6ee7b7;
-  --fn-danger: #ef4444;
-  --fn-danger-bg: #fef2f2;
-  --fn-danger-border: #fca5a5;
-  --fn-warning: #f59e0b;
-  --fn-warning-bg: #fffbeb;
-  --fn-warning-border: #fcd34d;
-  --fn-warning-text: #b45309;
+  --fn-success: #2d7a5f;
+  --fn-success-bg: #f1f8f5;
+  --fn-success-border: #d7eadf;
+  --fn-danger: #b24750;
+  --fn-danger-bg: #fff4f5;
+  --fn-danger-border: #f3dde0;
+  --fn-warning: #986e24;
+  --fn-warning-bg: #fff9ef;
+  --fn-warning-border: #f1e3c4;
+  --fn-warning-text: #986e24;
 
   /* ---- 阴影 ---- */
   --fn-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --fn-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
+  --fn-shadow-sm: 0 1px 3px #1b233808;
   --fn-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
   --fn-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.07), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
   --fn-shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.07), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
-  --fn-shadow-brand: 0 4px 14px var(--fn-brand-shadow);
+  --fn-shadow-brand: none;
 
   /* ---- 圆角 ---- */
   --fn-radius-sm: 5px;
   --fn-radius-md: 8px;
   --fn-radius-lg: 12px;
-  --fn-radius-xl: 18px;
+  --fn-radius-xl: 16px;
   --fn-radius-full: 9999px;
 
   /* ---- 动效 ---- */
   --fn-transition-fast: 0.12s cubic-bezier(0.4, 0, 0.2, 1);
   --fn-transition: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
-  --fn-sidebar-width: 240px;
+  --fn-sidebar-width: 244px;
 
   /* ---- 兼容旧别名 ---- */
   --bg: var(--fn-bg-layout);
@@ -85,11 +87,13 @@
 
   /* ---- Element Plus 主题对齐 ---- */
   --el-color-primary: var(--fn-brand);
-  --el-color-primary-light-3: #4d83f9;
-  --el-color-primary-light-5: #85abfb;
-  --el-color-primary-light-7: #bcd2fd;
-  --el-color-primary-light-8: #d3e1fe;
+  --el-color-primary-light-3: #728df9;
+  --el-color-primary-light-5: #9aadfb;
+  --el-color-primary-light-7: #c2cefc;
+  --el-color-primary-light-8: #d7dffe;
   --el-color-primary-light-9: #eef3ff;
+  --el-color-primary-dark-2: #284ee2;
+  --el-font-family: var(--font-sans);
   --el-border-radius-base: var(--fn-radius-md);
   --el-border-color: var(--fn-border-primary);
   --el-text-color-primary: var(--fn-text-primary);
@@ -98,6 +102,20 @@
 
 * {
   box-sizing: border-box;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
 }
 
 html,
@@ -110,10 +128,9 @@ body,
 body {
   background: var(--fn-bg-layout);
   color: var(--fn-text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'Noto Sans SC',
-    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.6;
+  line-height: var(--leading-ui, 1.5);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -178,7 +195,9 @@ a:hover {
   margin-bottom: 2px;
   font-size: 14px;
   user-select: none;
-  transition: background var(--fn-transition-fast), color var(--fn-transition-fast);
+  transition:
+    background var(--fn-transition-fast),
+    color var(--fn-transition-fast);
 }
 
 .nav-item:hover {
@@ -216,7 +235,7 @@ a:hover {
 
 /* ================= 页面 ================= */
 .page {
-  padding: 24px 28px;
+  padding: 36px 46px;
   overflow-y: auto;
   flex: 1;
 }
@@ -225,7 +244,7 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 28px;
   gap: 16px;
   flex-wrap: wrap;
 }
@@ -236,15 +255,19 @@ a:hover {
 }
 
 .page-title {
-  font-size: 20px;
-  font-weight: 700;
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0;
   color: var(--fn-text-primary);
 }
 
 .page-desc {
-  font-size: 13px;
-  color: var(--fn-text-tertiary);
-  margin-top: 3px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--fn-text-secondary);
+  margin: 0;
 }
 
 /* ================= 卡片 ================= */
@@ -341,7 +364,9 @@ a:hover {
   margin-bottom: 10px;
   font-size: 13px;
   cursor: pointer;
-  transition: background var(--fn-transition-fast), box-shadow var(--fn-transition-fast);
+  transition:
+    background var(--fn-transition-fast),
+    box-shadow var(--fn-transition-fast);
 }
 
 .evidence-card:hover {
@@ -362,7 +387,7 @@ a:hover {
   flex-shrink: 0;
 }
 
-/* ================= 按钮（对齐 Octop） ================= */
+/* ================= 按钮 ================= */
 .el-button {
   height: 36px;
   padding: 0 16px;
@@ -465,7 +490,22 @@ a:hover {
   line-height: 1.9;
 }
 
-button:focus-visible, a:focus-visible {
+@media (max-width: 1100px) {
+  .page {
+    padding: 28px;
+  }
+}
+@media (max-width: 760px) {
+  .page {
+    padding: 24px 18px;
+  }
+  .toolbar {
+    flex-wrap: wrap;
+  }
+}
+
+button:focus-visible,
+a:focus-visible {
   outline: 2px solid var(--fn-brand);
   outline-offset: 2px;
 }

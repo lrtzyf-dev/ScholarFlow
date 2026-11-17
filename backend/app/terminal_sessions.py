@@ -133,6 +133,7 @@ class Session:
         self.job = None
         self.process = None
         self.pid = None
+        self.backend = None
         self.worker = None
         self.reader = self.writer = None
         root = workspace.root_path(scope)
@@ -173,7 +174,8 @@ class Session:
     def info(self):
         with self.lock:
             return {'id': self.id, 'project_id': self.project_id, 'shell': self.shell, 'path': self.path,
-                    'cwd': self.cwd, 'pid': self.pid, 'status': self.status, 'exit_code': self.exit_code,
+                    'cwd': self.cwd, 'pid': self.pid, 'backend': self.backend,
+                    'status': self.status, 'exit_code': self.exit_code,
                     'error': self.error, 'rows': self.rows, 'cols': self.cols,
                     'created_at': self.created, 'connected': self.attached}
 
@@ -301,7 +303,9 @@ class Session:
                     last_message = time.monotonic()
                     kind = message['type']
                     if kind == 'ready':
-                        self.pid = message['pid']; self.ready.set()
+                        self.pid = message['pid']
+                        self.backend = message.get('backend')
+                        self.ready.set()
                     elif kind == 'output':
                         self.append(message['data'])
                     elif kind == 'size':

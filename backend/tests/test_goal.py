@@ -101,3 +101,26 @@ def test_goal_api_empty_returns_400():
 def test_goal_api_pause_none_returns_400():
     r = client.post("/api/goal/pause")
     assert r.status_code == 400
+
+
+def test_goal_api_stale_revision_returns_conflict():
+    created = client.post("/api/goal", json={"description": "修订目标"}).json()["current"]
+    assert client.post("/api/goal/pause", json={"expected_revision": created["revision"]}).status_code == 200
+    stale = client.post("/api/goal/cancel", json={"expected_revision": created["revision"]})
+    assert stale.status_code == 409
+    assert goal_store.get_current_goal()["status"] == "paused"
+
+
+def test_scoped_goal_api_user_cancel_requires_message_and_records_revision(db):
+    from app.goal_ledger import ensure_run_goal, sync_plan_requirements
+    created = ensure_run_goal(db, "api-run", "c", "分析")
+    created = sync_plan_requirements(db, created["id"], [{"title": "必须完成", "phase": "analyze"}])
+    db.commit()
+    assert client.get(f"/api/goal/{created['id']}").json()["scope"] == "run"
+    payload = {"expected_revision": created["revision"], "action": "cancel_requirements",
+               "requirement_ids": [created["requirements"][0]["id"]]}
+    assert client.post(f"/api/goal/{created['id']}/revisions", json=payload).status_code == 422
+    result = client.post(f"/api/goal/{created['id']}/revisions", json={**payload, "source_message_id": "user-message"})
+    assert result.status_code == 200
+    assert result.json()["requirements"][0]["status"] == "cancelled"
+    assert result.json()["revisions"][-1]["source_message_id"] == "user-message"

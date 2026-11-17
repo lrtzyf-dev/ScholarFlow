@@ -2,7 +2,7 @@
 
 检查范围：
 - 运行模式与配置来源（config.json / .env）；
-- LLM / Embedding 连通性（短超时，不阻塞）；
+- LLM / Embedding 本地配置（不发起接口请求）；
 - 数据库完整性、数据目录可写性、磁盘空间、向量库；
 - MCP 服务器连接状态；
 - 关键参数合法性与配置冲突。
@@ -17,15 +17,14 @@ import sqlite3
 import tempfile
 from datetime import datetime
 
-import httpx
 
 from .config import (BACKEND_DIR, CONFIG_PATH, DB_PATH, DATA_DIR, VECTOR_PATH,
                      settings)
+from .model_connection import normalize_effort
 
 # 连通性检查的短超时，避免 doctor 长时间挂起
 PROBE_TIMEOUT = 8.0
-VALID_APPROVAL = ("read_only", "auto", "full_access")
-VALID_EFFORT = ("", "minimal", "low", "medium", "high")
+VALID_APPROVAL = ("always", "read_only", "auto", "full_access")
 
 
 def _check(check_id: str, label: str, status: str, detail: str) -> dict:
@@ -35,77 +34,39 @@ def _check(check_id: str, label: str, status: str, detail: str) -> dict:
 # ---------- A. 运行模式与配置来源 ----------
 
 def _check_mode() -> dict:
-    detail = (f"LLM：{settings.llm_mode}（模型 {settings.llm_model}）；"
-              f"Embedding：{settings.embedding_mode}；审批：{settings.approval_mode}；"
-              f"推理强度：{settings.reasoning_effort or '默认'}")
+    detail = (f"Embedding：{settings.embedding_mode}；应用默认审批：{settings.approval_mode}。"
+              "实际任务使用该会话绑定的模型和权限。")
     return _check("runtime_mode", "运行模式", "ok", detail)
 
 
 def _check_config_sources() -> dict:
+    from .config import credential_status
     cfg = CONFIG_PATH.exists()
     env = (BACKEND_DIR / ".env").exists()
     parts = [f"config.json：{'存在' if cfg else '无'}", f".env：{'存在' if env else '无'}"]
     status = "ok" if cfg or env else "warn"
     if not cfg and not env:
-        parts.append("当前仅使用代码默认值，未持久化任何配置")
+        parts.append("未发现旧配置文件；独立模型档案另存于本地数据库")
+    warnings = credential_status()
+    if warnings:
+        status = "error" if any(key != "migration" for key in warnings) else "warn"
+        parts.extend(warnings.values())
     return _check("config_sources", "配置来源", status, "；".join(parts))
 
 
 # ---------- B. 连通性 ----------
 
 def _check_llm() -> dict:
-    if settings.llm_mode == "mock":
-        return _check("llm", "大模型连通性", "ok",
-                      "离线 Mock 模式：使用本地确定性应答，无需网络。")
-    base = (settings.llm_base_url or "").rstrip("/")
-    if not base.startswith(("http://", "https://")):
-        return _check("llm", "大模型连通性", "error",
-                      f"接口地址非法：{settings.llm_base_url!r}")
-    url = f"{base}/chat/completions"
-    body = {"model": settings.llm_model,
-            "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
-    headers = {"Content-Type": "application/json",
-               "Authorization": f"Bearer {settings.llm_api_key}"}
-    try:
-        with httpx.Client(timeout=PROBE_TIMEOUT) as client:
-            resp = client.post(url, headers=headers, json=body)
-        if resp.status_code in (401, 403):
-            return _check("llm", "大模型连通性", "error",
-                          f"认证失败（HTTP {resp.status_code}）：API Key 无效或无权限。")
-        if resp.status_code >= 400:
-            return _check("llm", "大模型连通性", "error",
-                          f"请求被拒（HTTP {resp.status_code}）：{resp.text[:160]}")
-        return _check("llm", "大模型连通性", "ok",
-                      f"接口可达，模型 {settings.llm_model} 正常响应。")
-    except httpx.TimeoutException:
-        return _check("llm", "大模型连通性", "error",
-                      f"连接超时（{PROBE_TIMEOUT}s）：检查网络或接口地址 {base}")
-    except httpx.HTTPError as exc:
-        return _check("llm", "大模型连通性", "error",
-                      f"无法连接：{type(exc).__name__}: {exc}")
+    mode = settings.llm_mode
+    return _check("llm", "模型配置（本地）", "warn" if mode == "unconfigured" else "ok",
+                  "模型待配置，未发起接口请求。" if mode == "unconfigured" else
+                  "已读取本地模型配置；接口连通性尚未测试。")
 
 
 def _check_embedding() -> dict:
-    if settings.embedding_mode == "local":
-        return _check("embedding", "向量化能力", "ok",
-                      f"本地哈希向量（维度 {settings.vector_dim}），零依赖可用。")
-    base = (settings.embedding_base_url or settings.llm_base_url or "").rstrip("/")
-    url = f"{base}/embeddings"
-    body = {"model": settings.embedding_model, "input": ["ping"]}
-    key = settings.embedding_api_key or settings.llm_api_key
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    try:
-        with httpx.Client(timeout=PROBE_TIMEOUT) as client:
-            resp = client.post(url, headers=headers, json=body)
-        if resp.status_code >= 400:
-            return _check("embedding", "向量化能力", "error",
-                          f"HTTP {resp.status_code}：{resp.text[:160]}")
-        dim = len(resp.json()["data"][0]["embedding"])
-        return _check("embedding", "向量化能力", "ok",
-                      f"Embedding 接口正常，返回向量维度 {dim}。")
-    except httpx.HTTPError as exc:
-        return _check("embedding", "向量化能力", "error",
-                      f"无法连接：{type(exc).__name__}: {exc}")
+    return _check("embedding", "向量化配置（本地）", "ok",
+                  "本地哈希向量；本次检查无外部调用。" if settings.embedding_mode == "local" else
+                  "已配置远端 Embedding；本次检查未发起接口请求。")
 
 
 # ---------- C. 存储 ----------
@@ -175,14 +136,17 @@ def _check_mcp() -> dict:
             continue
         enabled_n += 1
         if s["error"] or s["status"] in ("error", "failed"):
-            problems.append(f"{s['name']}：{s['error'] or s['status']}")
+            problems.append(f"{s['name']}：连接异常，请检查该服务器配置")
+        elif s["status"] not in ("connected", "ready"):
+            problems.append(f"{s['name']}：连接中" if s["status"] in ("connecting", "starting") else
+                            f"{s['name']}：当前未连接")
     if problems:
         return _check("mcp", "MCP 服务器", "warn",
                       f"已启用 {enabled_n} 个；异常：{'；'.join(problems)[:200]}")
     detail = "；".join(f"{s['name']}（{s['tool_count']} 工具）"
                        for s in servers if s["enabled"])
     return _check("mcp", "MCP 服务器", "ok",
-                  f"已启用 {enabled_n} 个，全部正常：{detail[:200]}")
+                  f"已启用 {enabled_n} 个；本地连接状态：{detail[:200]}（未主动探测远端）")
 
 
 # ---------- E. 参数合法性 ----------
@@ -192,12 +156,14 @@ def _check_params() -> list[dict]:
     if settings.approval_mode not in VALID_APPROVAL:
         out.append(_check("param_approval", "审批模式", "error",
                           f"非法取值 {settings.approval_mode!r}，应为 {VALID_APPROVAL}"))
-    if settings.reasoning_effort not in VALID_EFFORT:
+    try:
+        normalize_effort(settings.reasoning_effort)
+    except ValueError:
         out.append(_check("param_effort", "推理强度", "warn",
                           f"非标准取值 {settings.reasoning_effort!r}，部分服务可能忽略"))
-    if settings.max_agent_steps < 1 or settings.max_agent_steps > 20:
+    if settings.max_agent_steps < 1 or settings.max_agent_steps > 128:
         out.append(_check("param_steps", "推理步数", "warn",
-                          f"max_agent_steps={settings.max_agent_steps} 超出建议范围 1–20"))
+                          f"max_agent_steps={settings.max_agent_steps} 超出合法范围 1–128"))
     if settings.retrieve_topk < 1 or settings.retrieve_topk > 20:
         out.append(_check("param_topk", "检索条数", "warn",
                           f"retrieve_topk={settings.retrieve_topk} 超出建议范围 1–20"))
@@ -207,35 +173,34 @@ def _check_params() -> list[dict]:
     return out
 
 
-def run_diagnostics() -> dict:
-    """运行全部检查并汇总，返回结构化诊断报告。"""
-    checks = [
-        _check_mode(),
-        _check_config_sources(),
-        _check_llm(),
-        _check_embedding(),
-        _check_database(),
-        _check_data_dir(),
-        _check_disk(),
-        _check_vectors(),
-        _check_mcp(),
-        *_check_params(),
-    ]
-    summary = {
-        "ok": sum(1 for c in checks if c["status"] == "ok"),
-        "warn": sum(1 for c in checks if c["status"] == "warn"),
-        "error": sum(1 for c in checks if c["status"] == "error"),
-    }
-    if summary["error"]:
-        overall = "error"
-    elif summary["warn"]:
-        overall = "warn"
-    else:
-        overall = "ok"
-    return {
-        "overall": overall,
-        "summary": summary,
-        "checks": checks,
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "data_dir": str(DATA_DIR),
-    }
+def run_diagnostics(conversation_id=None) -> dict:
+    """Local-only inspection; one failing check cannot abort the report."""
+    checks = []
+    functions = (_check_mode, _check_config_sources, _check_llm, _check_embedding,
+                 _check_database, _check_data_dir, _check_disk, _check_vectors, _check_mcp, _check_params)
+    identifiers = ("runtime_mode", "config_sources", "llm", "embedding", "database",
+                   "data_dir", "disk", "vectors", "mcp", "params")
+    for check_id, function in zip(identifiers, functions):
+        try:
+            value = function()
+            checks.extend(value if isinstance(value, list) else [value])
+        except Exception:
+            checks.append(_check(check_id, "本地检查失败", "error",
+                                 "此项暂时无法检查；其余检查已继续。请查看存储、配置或运行状态。"))
+    from .diagnostic_probes import probe_targets
+    targets = probe_targets(conversation_id)
+    selected = next((target for target in targets if target["service"] == "llm"), None)
+    if selected:
+        for index, check in enumerate(checks):
+            if check["id"] == "llm":
+                checks[index] = _check("llm", "当前会话模型（本地）" if conversation_id else "默认模型（本地）",
+                                       "warn" if selected["mode"] in {"unconfigured", "unavailable"} else "ok",
+                                       selected["detail"] if not selected["available"] else
+                                       f"模型 {selected['model_id']}；连通性尚未测试。")
+    summary = {status: sum(1 for check in checks if check["status"] == status)
+               for status in ("ok", "warn", "error")}
+    return {"overall": "error" if summary["error"] else "warn" if summary["warn"] else "ok",
+            "summary": summary, "checks": checks,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "data_dir": str(DATA_DIR), "scope": "local", "remote_requests": 0,
+            "conversation_id": conversation_id, "probe_targets": targets}

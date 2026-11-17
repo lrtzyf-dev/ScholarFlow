@@ -32,8 +32,8 @@ def _content_disposition(base: str, ext: str) -> str:
 
 @router.post("")
 def export(req: ExportRequest, db: Session = Depends(get_db)):
-    papers = collect_papers(db, req.evidence)
     fmt = req.format.lower()
+    papers = collect_papers(db, req.evidence, preserve_evidence=fmt in ('md', 'docx'))
     if fmt == "md":
         text = build_markdown(req.question, req.answer, papers)
         return Response(

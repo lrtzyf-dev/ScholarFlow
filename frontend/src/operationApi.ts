@@ -1,0 +1,6 @@
+import axios from 'axios'
+export type Reconciliation = { id: string; request_id: string; attempt_id: string; operation_key: string; signature: string; action: 'executed' | 'not_executed' | 'unknown'; reference: string; created_at: string; provider_verified: false }
+export type RunOperation = { operation_key: string; signature: string; tool_name: string; arguments: Record<string, unknown>; error: string; status: string; reported_state: Reconciliation['action']; retry_consumed: boolean; provider_verified: false; reconciliations: Reconciliation[] }
+export type RunOperations = { parent: { id: string; revision: number; attempt_id: string; active: boolean; kind: string }; items: RunOperation[]; can_reconcile: boolean; notice: string }
+export const getRunOperations = (runId: string): Promise<RunOperations> => axios.get('/api/subtasks/runs/' + encodeURIComponent(runId) + '/operations').then(r => r.data)
+export const reconcileRunOperation = (runId: string, value: { request_id: string; expected_parent_revision: number; expected_attempt_id: string; operation_key: string; signature: string; action: Reconciliation['action']; reference: string }): Promise<Reconciliation> => axios.post('/api/subtasks/runs/' + encodeURIComponent(runId) + '/operations/reconcile', value).then(r => r.data)

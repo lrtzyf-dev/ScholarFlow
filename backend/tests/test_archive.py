@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 from app import run_store, task_runner
 from app.main import app
 from app.models import Conversation, DesktopState, ForegroundRun, QARecord, TaskRecord
+from app.timeutil import utcnow
 
 client = TestClient(app)
 
@@ -109,7 +110,7 @@ def test_archive_rejects_running_and_finishing_work_atomically(db, monkeypatch, 
         run = db.get(ForegroundRun, "chat_archive_test")
         run.status = "running"
         if kind == "stale_live":
-            run.heartbeat_at = datetime.utcnow() - timedelta(minutes=5)
+            run.heartbeat_at = utcnow() - timedelta(minutes=5)
     if kind in ("live", "stale_live"):
         monkeypatch.setattr(run_store, "active_for_conversation", lambda cid: cid == "c_archive")
     db.commit()
@@ -124,7 +125,7 @@ def test_stale_foreground_checkpoint_can_be_archived_and_is_retained(db):
     seed(db)
     run = db.get(ForegroundRun, "chat_archive_test")
     run.status = "running"
-    run.heartbeat_at = datetime.utcnow() - timedelta(minutes=5)
+    run.heartbeat_at = utcnow() - timedelta(minutes=5)
     db.commit()
     assert archive().status_code == 200
     db.expire_all()

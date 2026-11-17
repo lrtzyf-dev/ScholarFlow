@@ -9,6 +9,7 @@ from app import task_events
 from app.api import tasks
 from app.main import app
 from app.models import Conversation, DeletedConversation, DesktopState, ForegroundRun, QARecord
+from app.timeutil import utcnow
 
 client = TestClient(app)
 
@@ -21,7 +22,7 @@ def page(**params):
 
 def test_literal_search_chinese_body_excerpt_and_scopes(db):
     db.add_all([Conversation(id='c_body', title='Review'),
-                Conversation(id='c_archived', title='Review', archived_at=datetime.utcnow()),
+                Conversation(id='c_archived', title='Review', archived_at=utcnow()),
                 Conversation(id='c_deleted', title='Deleted'), DeletedConversation(id='c_deleted')])
     for cid in ('c_body', 'c_archived', 'c_deleted'):
         db.add(QARecord(id='qa_' + cid, conversation_id=cid, question='Question',
@@ -73,7 +74,7 @@ def test_fallbacks_archive_precedence_and_lookups(db):
     db.add_all([QARecord(id='qa_legacy', conversation_id='c_legacy', question='Legacy 中文', answer='Body'),
                 DesktopState(key='conversation:c_draft', value={'text': 'Draft 中文', 'images': ['DO NOT RETURN']}),
                 ForegroundRun(id='chat_partial', conversation_id='c_run', question='Partial', partial_answer='Interrupted 中文', status='interrupted'),
-                Conversation(id='c_archive', title='Archive', archived_at=datetime.utcnow()),
+                Conversation(id='c_archive', title='Archive', archived_at=utcnow()),
                 DesktopState(key='conversation:c_archive', value={'text': 'Archived 中文'}),
                 DeletedConversation(id='c_deleted'),
                 DesktopState(key='conversation:c_deleted', value={'text': 'Deleted 中文'})])
@@ -105,6 +106,74 @@ def test_sidebar_pins_paginate_before_recent_and_delete_boundary(db):
     assert client.delete('/api/conversations/c_039').status_code == 200
     second = page(sort='sidebar_updated_at', cursor=first['next_cursor'])
     assert [c['id'] for c in second['conversations']] == ['c_040', 'c_041', 'recent']
+
+
+def test_unassigned_filter_applies_before_pagination_counts_lookup_and_search(db):
+    at = datetime(2026, 1, 1)
+    db.add_all(Conversation(id=f'project_{i:03}', title='Shared search', project_id='unavailable_project',
+                            pinned_at=at, pin_position=i, updated_at=at + timedelta(days=1))
+               for i in range(47))
+    db.add_all(Conversation(id=f'plain_{i:03}', title='Shared search', pinned_at=at if i == 0 else None,
+                            pin_position=47 if i == 0 else None, updated_at=at)
+               for i in range(43))
+    db.add(QARecord(id='legacy_qa', conversation_id='legacy', question='Shared search', answer='Legacy'))
+    db.commit()
+    first = page(project_scope='unassigned', sort='sidebar_updated_at', limit=40)
+    assert first['total'] == 44 and first['pinned_total'] == 1
+    assert len(first['conversations']) == 40
+    assert first['conversations'][0]['id'] == 'plain_000'
+    second = page(project_scope='unassigned', sort='sidebar_updated_at', cursor=first['next_cursor'])
+    ids = [item['id'] for item in first['conversations'] + second['conversations']]
+    assert len(ids) == len(set(ids)) == 44
+    assert 'legacy' in ids and not any(cid.startswith('project_') for cid in ids)
+    assert page(q='Shared search', project_scope='unassigned')['total'] == 44
+    assert page(q='Shared search')['total'] == 91, 'history/search retain projects by default'
+    lookup = client.post('/api/conversations/lookup', json={
+        'ids': ['project_000', 'plain_000', 'legacy'], 'project_scope': 'unassigned',
+    }).json()
+    assert {item['id'] for item in lookup['conversations']} == {'plain_000', 'legacy'}
+    assert lookup['pinned_total'] == 1
+    assert client.get('/api/conversations/project_000/activity').status_code == 200
+    assert client.get('/api/conversations/page', params={
+        'sort': 'sidebar_updated_at', 'cursor': first['next_cursor'],
+    }).status_code == 422, 'cursor cannot cross project scopes'
+    global_cursor = page(sort='sidebar_updated_at')['next_cursor']
+    assert client.get('/api/conversations/page', params={
+        'sort': 'sidebar_updated_at', 'cursor': global_cursor, 'project_scope': 'unassigned',
+    }).status_code == 422
+    assert client.get('/api/conversations/page', params={'project_scope': 'invalid'}).status_code == 422
+
+
+def test_unassigned_pin_reorder_preserves_hidden_project_slots_and_detects_membership_change(db):
+    at = datetime(2026, 1, 1)
+    order = ['plain_a', 'project_a', 'plain_b', 'project_b', 'plain_c']
+    db.add_all(Conversation(id=cid, title=cid, pinned_at=at, pin_position=i,
+                            project_id='project' if cid.startswith('project_') else None)
+               for i, cid in enumerate(order))
+    db.commit()
+    desired = ['plain_c', 'plain_a', 'plain_b']
+    body = {'conversation_ids': desired, 'expected_order': ['plain_a', 'plain_b', 'plain_c'],
+            'project_scope': 'unassigned'}
+    for _ in range(2):
+        response = client.put('/api/conversations/pins/order', json=body)
+        assert response.status_code == 200, response.text
+        assert response.json()['conversation_ids'] == desired
+    assert [item['id'] for item in page(sort='sidebar_updated_at')['conversations']] == [
+        'plain_c', 'project_a', 'plain_a', 'project_b', 'plain_b',
+    ]
+    stale = client.put('/api/conversations/pins/order', json={**body, 'conversation_ids': ['plain_b', 'plain_a', 'plain_c']})
+    assert stale.status_code == 409
+    db.expire_all()
+    db.get(Conversation, 'plain_c').project_id = 'project'
+    db.commit()
+    changed = client.put('/api/conversations/pins/order', json={**body, 'expected_order': desired})
+    assert changed.status_code == 409
+    assert changed.json()['detail']['current_order'] == ['plain_a', 'plain_b']
+    leaked = client.put('/api/conversations/pins/order', json={
+        'conversation_ids': ['plain_b', 'plain_a', 'project_a'],
+        'expected_order': ['plain_a', 'plain_b', 'project_a'], 'project_scope': 'unassigned',
+    })
+    assert leaked.status_code == 409
 
 
 @pytest.mark.parametrize('action', ['pin', 'rename', 'delete', 'fork', 'archive', 'detail'])

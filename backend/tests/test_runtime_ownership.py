@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, run_store, task_runner
+from app import main, run_store, task_runner, resource_budget
 from app.api import runtime
 from app.runtime_owner import RuntimeInUse, RuntimeOwner, claim_or_activate, read_descriptor
 
@@ -176,6 +176,14 @@ def test_startup_failure_releases_directory_and_stopped_workers_keep_lock(tmp_pa
     assert replacement.reserve_desktop()
     replacement.finish_shutdown(idle=True)
     monkeypatch.setattr(main, 'init_db', lambda: None)
+    # This lifecycle-only phase deliberately skips DB setup and owns another
+    # directory. Isolate its recovery subsystem too; production must keep the
+    # real startup-owner/database-directory check intact.
+    monkeypatch.setattr(resource_budget, 'recover_startup_reservations', lambda: None)
+    from app import run_timing
+    monkeypatch.setattr(run_timing, 'recover_startup', lambda: None)
+    monkeypatch.setattr(run_timing, 'start', lambda: None)
+    monkeypatch.setattr(run_timing, 'stop', lambda: None)
     monkeypatch.setattr(task_runner, 'recover_interrupted_tasks', lambda *a: None)
     monkeypatch.setattr(task_runner, 'running_task_ids', lambda: ['still-executing'])
     async def linger():

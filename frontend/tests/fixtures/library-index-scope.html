@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>隔离组件作用域回归</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { createApp, h, ref } from 'vue'
+      import LibraryIndexVersions from '/src/components/LibraryIndexVersions.vue'
+      const query = new URLSearchParams(location.search)
+      const scope = ref({ paperId: query.get('paper'), conversationId: 'index-owner' })
+      window.indexScopeChanges = []
+      window.switchIndexScope = (conversationId) => {
+        scope.value = { ...scope.value, conversationId }
+      }
+      createApp({
+        setup: () => () =>
+          h(LibraryIndexVersions, {
+            ...scope.value,
+            onChanged: () => window.indexScopeChanges.push(scope.value.conversationId),
+          }),
+      }).mount('#app')
+    </script>
+  </body>
+</html>

@@ -27,6 +27,99 @@ def test_save_and_reload_roundtrip():
     assert reloaded.matrix.shape == (2, 3)
     assert reloaded.ids == ["c1", "c2"]
     assert reloaded.paper_ids == ["p1", "p1"]
+    assert reloaded.embedding_cache_matches_current()
+    assert np.allclose(reloaded.vectors_for(["c2"])["c2"], [0.0, 1.0, 0.0])
+
+
+def test_begin_build_and_fill_in_place():
+    _clean()
+    store = NumpyVectorStore()
+    store.begin_build(total_new_rows=3, dim=2)
+    assert store.matrix.shape == (3, 2)
+    store.fill(["c1"], ["p1"], np.array([[1.0, 0.0]], dtype=np.float32))
+    store.fill(["c2", "c3"], ["p1", "p1"],
+               np.array([[0.0, 1.0], [0.5, 0.5]], dtype=np.float32))
+    assert store.ids == ["c1", "c2", "c3"]
+    assert store.matrix.shape == (3, 2)
+    store.flush()
+    assert VECTOR_PATH.exists()
+
+    reloaded = NumpyVectorStore()
+    assert reloaded.matrix.shape == (3, 2)
+    assert reloaded.ids == ["c1", "c2", "c3"]
+    _clean()
+
+
+def test_begin_build_keeps_existing_rows():
+    _clean()
+    store = NumpyVectorStore()
+    store.add(["old"], ["p0"], np.array([[1.0, 1.0]], dtype=np.float32))
+    store.begin_build(total_new_rows=1, dim=2)
+    assert store.matrix.shape == (2, 2)
+    store.fill(["new"], ["p1"], np.array([[2.0, 2.0]], dtype=np.float32))
+    assert store.ids == ["old", "new"]
+    assert np.allclose(store.matrix[0], [1.0, 1.0])
+    _clean()
+
+
+def test_search_tolerates_length_mismatch():
+    """矩阵行数多于元数据时，检索以共同长度为准，不抛 IndexError。"""
+    _clean()
+    store = NumpyVectorStore()
+    store.add(["c1", "c2"], ["p1", "p1"],
+              np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32))
+    # 人为制造脏数据：矩阵多出一行，但 ids/paper_ids 不变
+    store.matrix = np.vstack([store.matrix, np.array([[0.5, 0.5]], dtype=np.float32)])
+    hits = store.search(np.array([1.0, 0.0], dtype=np.float32), topk=5)
+    assert hits and hits[0][0] == "c1"
+    _clean()
+
+
+def test_embedding_cache_is_disabled_when_configuration_changes(tmp_path, monkeypatch):
+    from app.config import settings
+
+    path = tmp_path / "vectors.npy"
+    store = NumpyVectorStore(path)
+    store.add(["c1"], ["p1"], np.array([[1.0, 0.0]], dtype=np.float32))
+    assert store.embedding_cache_matches_current()
+
+    monkeypatch.setattr(settings, "embedding_api_key", "changed-key")
+    reloaded = NumpyVectorStore(path)
+    assert not reloaded.embedding_cache_matches_current()
+    assert reloaded.search(np.array([1.0, 0.0], dtype=np.float32)) == []
+
+
+def test_legacy_index_without_fingerprint_is_not_used_for_semantic_search(tmp_path):
+    path = tmp_path / "legacy.npy"
+    np.save(path, np.array([[1.0, 0.0]], dtype=np.float32))
+    path.with_suffix(".json").write_text(
+        json.dumps({"ids": ["c1"], "paper_ids": ["p1"]}), encoding="utf-8"
+    )
+
+    store = NumpyVectorStore(path)
+    assert not store.embedding_cache_matches_current()
+    assert store.search(np.array([1.0, 0.0], dtype=np.float32)) == []
+
+
+def test_vectors_for_tracks_remove_and_rebuild():
+    _clean()
+    store = NumpyVectorStore()
+    store.add(
+        ["c1", "c2"], ["p1", "p2"],
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+    store.remove_paper("p1")
+    assert "c1" not in store.vectors_for(["c1", "c2"])
+    assert np.allclose(store.vectors_for(["c2"])["c2"], [0.0, 1.0])
+
+    store.remove_paper("p2")
+    assert store.vectors_for(["c2"]) == {}
+    assert not VECTOR_PATH.exists()
+    assert not VECTOR_PATH.with_suffix(".json").exists()
+    store.add(["c3"], ["p3"], np.array([[0.5, 0.5]], dtype=np.float32))
+    assert store.embedding_cache_matches_current()
+    assert np.allclose(store.vectors_for(["c3"])["c3"], [0.5, 0.5])
+    _clean()
 
 
 def test_legacy_npz_npy_fallback():

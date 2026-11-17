@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use ScholarFlow in your research, please cite the repository release you used."
+title: "ScholarFlow"
+version: "0.1.0"
+date-released: "2026-11-17"
+license: "MIT"
+authors:
+  - family-names: "Zhang"
+    given-names: "Yifan"

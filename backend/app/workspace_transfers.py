@@ -22,6 +22,7 @@ from typing import Literal
 from . import (workspace, workspace_write, workspace_switches as switches, worktrees,
               worktree_archive as archive, project_git as git, git_operations,
               project_changes, run_store, terminal_sessions)
+from .timeutil import utcnow
 from .db import SessionLocal
 from .models import (Conversation, DesktopState, Project, TaskRecord, WorkspaceSwitch,
                      WorkspaceTransfer)
@@ -611,7 +612,7 @@ def _check_git_state_outcome(row, rollback):
 
 def _finish(db, row, rollback):
     from .api.desktop_state import ConversationState
-    now = datetime.utcnow()
+    now = utcnow()
     # Every affected chat loses permission to execute old plans, including chats
     # that stay in their original project. Text/editor drafts retain ownership.
     _, convs = _affected(db, [row.snapshot[k]['root_path'] for k in ('source', 'target')])

@@ -1,7 +1,11 @@
 import { nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import { markConversationRead } from './api'
 
-export function useAnswerReadState(root: Ref<HTMLElement | null>, conversationId: Ref<string>, enabled: Ref<boolean>) {
+export function useAnswerReadState(
+  root: Ref<HTMLElement | null>,
+  conversationId: Ref<string>,
+  enabled: Ref<boolean>
+) {
   const error = ref(false)
   const acknowledged = new Map<string, Set<string>>()
   let observer: IntersectionObserver | undefined
@@ -14,9 +18,16 @@ export function useAnswerReadState(root: Ref<HTMLElement | null>, conversationId
   let generation = 0
 
   function canRead() {
-    return !disposed && enabled.value && document.visibilityState === 'visible' && document.hasFocus()
-      && ![...document.querySelectorAll<HTMLElement>('[aria-modal="true"]')].some((modal) =>
-        modal.getClientRects().length > 0 && getComputedStyle(modal).visibility !== 'hidden')
+    return (
+      !disposed &&
+      enabled.value &&
+      document.visibilityState === 'visible' &&
+      document.hasFocus() &&
+      ![...document.querySelectorAll<HTMLElement>('[aria-modal="true"]')].some(
+        (modal) =>
+          modal.getClientRects().length > 0 && getComputedStyle(modal).visibility !== 'hidden'
+      )
+    )
   }
 
   function visibleIds(): string[] {
@@ -24,17 +35,26 @@ export function useAnswerReadState(root: Ref<HTMLElement | null>, conversationId
     if (!container || !canRead()) return []
     const bounds = container.getBoundingClientRect()
     const known = acknowledged.get(conversationId.value)
-    return [...container.querySelectorAll<HTMLElement>('[data-read-record-id]')].filter((node) => {
-      if (known?.has(node.dataset.readRecordId!)) return false
-      const rect = node.getBoundingClientRect()
-      return Math.min(rect.bottom, bounds.bottom, innerHeight) - Math.max(rect.top, bounds.top, 0) >= 20
-        && Math.min(rect.right, bounds.right, innerWidth) > Math.max(rect.left, bounds.left, 0)
-    }).map((node) => node.dataset.readRecordId!).slice(0, 100)
+    return [...container.querySelectorAll<HTMLElement>('[data-read-record-id]')]
+      .filter((node) => {
+        if (known?.has(node.dataset.readRecordId!)) return false
+        const rect = node.getBoundingClientRect()
+        return (
+          Math.min(rect.bottom, bounds.bottom, innerHeight) - Math.max(rect.top, bounds.top, 0) >=
+            20 &&
+          Math.min(rect.right, bounds.right, innerWidth) > Math.max(rect.left, bounds.left, 0)
+        )
+      })
+      .map((node) => node.dataset.readRecordId!)
+      .slice(0, 100)
   }
 
   function schedule(delay = 250) {
     if (disposed || timer !== undefined) return
-    timer = setTimeout(() => { timer = undefined; void flush() }, delay)
+    timer = setTimeout(() => {
+      timer = undefined
+      void flush()
+    }, delay)
   }
 
   async function flush() {
@@ -71,19 +91,31 @@ export function useAnswerReadState(root: Ref<HTMLElement | null>, conversationId
     schedule()
   }
 
-  watch([root, conversationId, enabled], async () => {
-    const currentGeneration = ++generation
-    observer?.disconnect()
-    mutations?.disconnect()
-    observed.clear()
-    error.value = false
-    await nextTick()
-    if (disposed || currentGeneration !== generation || !root.value || !enabled.value) return
-    observer = new IntersectionObserver(() => schedule(), { root: root.value, threshold: [0, 0.01] })
-    mutations = new MutationObserver(observeAnswers)
-    mutations.observe(root.value, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-read-record-id'] })
-    observeAnswers()
-  }, { flush: 'post', immediate: true })
+  watch(
+    [root, conversationId, enabled],
+    async () => {
+      const currentGeneration = ++generation
+      observer?.disconnect()
+      mutations?.disconnect()
+      observed.clear()
+      error.value = false
+      await nextTick()
+      if (disposed || currentGeneration !== generation || !root.value || !enabled.value) return
+      observer = new IntersectionObserver(() => schedule(), {
+        root: root.value,
+        threshold: [0, 0.01],
+      })
+      mutations = new MutationObserver(observeAnswers)
+      mutations.observe(root.value, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-read-record-id'],
+      })
+      observeAnswers()
+    },
+    { flush: 'post', immediate: true }
+  )
 
   const onFocus = () => schedule()
   onMounted(() => {
@@ -100,5 +132,12 @@ export function useAnswerReadState(root: Ref<HTMLElement | null>, conversationId
     document.removeEventListener('visibilitychange', onFocus)
     root.value?.removeEventListener('scroll', onFocus)
   })
-  return { error, retry: () => { clearTimeout(timer); timer = undefined; schedule(0) } }
+  return {
+    error,
+    retry: () => {
+      clearTimeout(timer)
+      timer = undefined
+      schedule(0)
+    },
+  }
 }

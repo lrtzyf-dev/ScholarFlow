@@ -286,6 +286,8 @@ def delete_snapshot(root, parent, worktree_id, snapshot_id, current_id=None):
     item = next((row for row in entries if row['id'] == snapshot_id), None)
     if item is None:
         workspace.fail('归档快照不存在或已清理', 404)
+    if not item['backup_valid']:
+        workspace.fail('归档 ZIP 缺失或校验失败，未清理 Git 快照', 409)
     backup = parent / f'archive-{snapshot_id}.zip'
     command(root, 'update-ref', '-d', item['ref'], item['head'])
     if backup.exists() or backup.is_symlink() or backup.is_junction():

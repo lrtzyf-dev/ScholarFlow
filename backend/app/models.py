@@ -6,6 +6,7 @@ from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .timeutil import utcnow
 
 
 def _uuid() -> str:
@@ -28,7 +29,7 @@ class Paper(Base):
     version_group: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(16), default="uploaded")  # uploaded/parsing/parsed/failed
     error: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     chunks: Mapped[list["Chunk"]] = relationship(back_populates="paper", cascade="all, delete-orphan")
 
@@ -58,6 +59,8 @@ class Reference(Base):
     ref_index: Mapped[int] = mapped_column(Integer)
     raw_text: Mapped[str] = mapped_column(Text, default="")
     title: Mapped[str] = mapped_column(String(512), default="")
+    page: Mapped[int | None] = mapped_column(Integer)
+    bbox: Mapped[list | None] = mapped_column(JSON, default=None)
     linked_paper_id: Mapped[str | None] = mapped_column(String(32), index=True)
 
 
@@ -67,7 +70,7 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(120))
     root_path: Mapped[str] = mapped_column(Text, unique=True)
     root_identity: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Conversation(Base):
@@ -76,14 +79,54 @@ class Conversation(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)  # 与 conversation_id 相同
     title: Mapped[str] = mapped_column(String(512), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     pinned_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     pin_position: Mapped[int | None] = mapped_column(Integer, default=None)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     archive_revision: Mapped[int] = mapped_column(Integer, default=0)
     project_id: Mapped[str | None] = mapped_column(String(32), default=None)
     workspace_revision: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ModelProfile(Base):
+    """Named immutable-at-use chat configuration; credentials live separately."""
+    __tablename__ = "model_profiles"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200))
+    base_url: Mapped[str] = mapped_column(String(2048))
+    model_id: Mapped[str] = mapped_column(String(256))
+    reasoning_effort: Mapped[str] = mapped_column(String(20), default="")
+    context_window_tokens: Mapped[int | None] = mapped_column(Integer, default=None)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, default=None)
+    credential_ref: Mapped[str | None] = mapped_column(String(32), default=None)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ModelCredential(Base):
+    __tablename__ = "model_credentials"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    profile_id: Mapped[str | None] = mapped_column(String(32), index=True, default=None)
+    legacy_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    protected_value: Mapped[str] = mapped_column(Text)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ConversationOptions(Base):
+    """Persisting options must not create a visible empty conversation."""
+    __tablename__ = "conversation_options"
+    conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    model_profile_id: Mapped[str | None] = mapped_column(String(32), default=None)
+    approval_mode: Mapped[str] = mapped_column(String(16), default="auto")
+    reasoning_effort: Mapped[str | None] = mapped_column(String(20), default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class WorkspaceSwitch(Base):
@@ -97,7 +140,7 @@ class WorkspaceSwitch(Base):
     workspace_revision: Mapped[int] = mapped_column(Integer)
     snapshot: Mapped[dict] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default='prepared')
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
 
@@ -114,7 +157,7 @@ class WorkspaceTransfer(Base):
     journal: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(24), default='prepared')
     error: Mapped[str] = mapped_column(Text, default='')
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
 
@@ -142,8 +185,8 @@ class ManagedWorktree(Base):
     archive_info: Mapped[dict | None] = mapped_column(JSON, default=None)
     error: Mapped[str] = mapped_column(Text, default='')
     output: Mapped[str] = mapped_column(Text, default='')
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ProjectChange(Base):
@@ -167,8 +210,8 @@ class ProjectChange(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     revision: Mapped[int] = mapped_column(Integer, default=1)
     undo_of: Mapped[str | None] = mapped_column(String(32), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ProjectCommand(Base):
@@ -197,8 +240,8 @@ class ProjectCommand(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class GitOperation(Base):
@@ -219,15 +262,15 @@ class GitOperation(Base):
     output: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     result_head: Mapped[str | None] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class DeletedConversation(Base):
     __tablename__ = "deleted_conversations"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ConversationMemory(Base):
@@ -240,7 +283,7 @@ class ConversationMemory(Base):
     summary: Mapped[str] = mapped_column(Text, default="")
     sources: Mapped[list] = mapped_column(JSON, default=list)
     mode: Mapped[str] = mapped_column(String(32), default="extractive")
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class CompactionCall(Base):
@@ -253,7 +296,7 @@ class CompactionCall(Base):
     status: Mapped[str] = mapped_column(String(16), default="started")
     usage_kind: Mapped[str] = mapped_column(String(16), default="unknown")
     usage: Mapped[dict | None] = mapped_column(JSON, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class DesktopState(Base):
@@ -263,7 +306,7 @@ class DesktopState(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     value: Mapped[dict] = mapped_column(JSON)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ForegroundRun(Base):
@@ -273,6 +316,8 @@ class ForegroundRun(Base):
     reviewed_plan_id: Mapped[str | None] = mapped_column(String(64), default=None)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     workspace: Mapped[dict | None] = mapped_column(JSON, default=None)
+    agent_checkpoint: Mapped[dict | None] = mapped_column(JSON, default=None)
+    runtime_config: Mapped[dict | None] = mapped_column(JSON, default=None)
 
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(String(32), index=True)
@@ -282,12 +327,13 @@ class ForegroundRun(Base):
     skills: Mapped[list] = mapped_column(JSON, default=list)
     images: Mapped[list] = mapped_column(JSON, default=list)
     partial_answer: Mapped[str] = mapped_column(Text, default="")
+    display_snapshot: Mapped[dict | None] = mapped_column(JSON, default=None)
     phase: Mapped[str] = mapped_column(String(32), default="setup")
     status: Mapped[str] = mapped_column(String(16), default="running")
     error: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    heartbeat_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class QARecord(Base):
@@ -298,6 +344,9 @@ class QARecord(Base):
     plan_images: Mapped[list | None] = mapped_column(JSON, default=None)
     reviewed_plan_id: Mapped[str | None] = mapped_column(String(64), default=None)
     workspace: Mapped[dict | None] = mapped_column(JSON, default=None)
+    runtime_config: Mapped[dict | None] = mapped_column(JSON, default=None)
+    # Internal provider continuation envelopes; never exposed in history APIs.
+    provider_context: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     conversation_id: Mapped[str | None] = mapped_column(String(32), index=True)
@@ -316,7 +365,7 @@ class QARecord(Base):
     usage: Mapped[dict | None] = mapped_column(JSON, default=None)
     usage_origin_id: Mapped[str | None] = mapped_column(String(32), default=None)
     read_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class TaskRecord(Base):
@@ -334,6 +383,50 @@ class TaskRecord(Base):
     events: Mapped[list | None] = mapped_column(JSON, default=None)   # 近期事件日志
     result: Mapped[dict | None] = mapped_column(JSON, default=None)   # 最终答案/证据
     checkpoint: Mapped[dict | None] = mapped_column(JSON, default=None)
+    runtime_config: Mapped[dict | None] = mapped_column(JSON, default=None)
     error: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Subscription(Base):
+    """arXiv 主题追踪订阅。"""
+    __tablename__ = "subscriptions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    topic: Mapped[str] = mapped_column(String(256))
+    interval_hours: Mapped[int] = mapped_column(Integer, default=24)
+    active: Mapped[int] = mapped_column(Integer, default=1)  # 1=启用 0=停用
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    last_status: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    recommendations: Mapped[list["Recommendation"]] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan"
+    )
+
+
+class Recommendation(Base):
+    """针对订阅生成的论文推荐，含评分、理由与反馈。"""
+    __tablename__ = "recommendations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    subscription_id: Mapped[str] = mapped_column(ForeignKey("subscriptions.id"), index=True)
+    arxiv_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    authors: Mapped[str] = mapped_column(String(1024), default="")
+    abstract: Mapped[str] = mapped_column(Text, default="")
+    published_at: Mapped[str | None] = mapped_column(String(32))
+    url: Mapped[str] = mapped_column(String(1024), default="")
+    github_url: Mapped[str | None] = mapped_column(String(1024), default=None)
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    reasons: Mapped[list] = mapped_column(JSON, default=list)
+    feedback: Mapped[str | None] = mapped_column(String(8), default=None)  # up/down/None
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    subscription: Mapped[Subscription] = relationship(back_populates="recommendations")
+
+
+# Register the shared goal ledger on the same declarative Base.
+from .goal_models import Goal, GoalRequirement, GoalRevision  # noqa: E402, F401
+from .ledger_models import CallRecord, CallUsageReceipt  # noqa: E402, F401

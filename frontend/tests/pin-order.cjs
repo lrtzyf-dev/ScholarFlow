@@ -10,7 +10,10 @@ const python = path.join(root, 'backend/.venv/Scripts/python.exe')
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitFor(fn, label) {
   const deadline = Date.now() + 15000
-  while (!await fn()) { assert.ok(Date.now() < deadline, `Timed out: ${label}`); await pause(40) }
+  while (!(await fn())) {
+    assert.ok(Date.now() < deadline, `Timed out: ${label}`)
+    await pause(40)
+  }
 }
 async function freePort() {
   const reservation = net.createServer()
@@ -21,19 +24,37 @@ async function freePort() {
 }
 async function launch(env) {
   const port = await freePort()
-  const child = spawn(python, ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(port)], {
-    cwd: path.join(root, 'backend'), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  const child = spawn(
+    python,
+    ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(port)],
+    {
+      cwd: path.join(root, 'backend'),
+      env,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  )
   let log = ''
-  child.stdout.on('data', (chunk) => { log += chunk })
-  child.stderr.on('data', (chunk) => { log += chunk })
+  child.stdout.on('data', (chunk) => {
+    log += chunk
+  })
+  child.stderr.on('data', (chunk) => {
+    log += chunk
+  })
   const base = `http://127.0.0.1:${port}`
   try {
     await waitFor(async () => {
       if (child.exitCode !== null) throw new Error(log)
-      try { return (await fetch(`${base}/api/health`)).ok } catch { return false }
+      try {
+        return (await fetch(`${base}/api/health`)).ok
+      } catch {
+        return false
+      }
     }, 'isolated backend')
-  } catch (error) { child.kill(); throw error }
+  } catch (error) {
+    child.kill()
+    throw error
+  }
   return { child, port, base }
 }
 async function stop(server) {
@@ -41,12 +62,30 @@ async function stop(server) {
   const ended = new Promise((resolve) => server.child.once('exit', resolve))
   server.child.kill()
   await ended
-  await waitFor(async () => { try { await fetch(`${server.base}/api/health`); return false } catch { return true } }, 'own port released')
+  await waitFor(async () => {
+    try {
+      await fetch(`${server.base}/api/health`)
+      return false
+    } catch {
+      return true
+    }
+  }, 'own port released')
 }
 async function main() {
   const data = await fs.mkdtemp(path.join(root, 'verification/runtime/pin-order-'))
-  const env = { ...process.env, DATA_DIR: data, LLM_API_KEY: '', EMBEDDING_API_KEY: '', REDIS_URL: '', DESKTOP_NOTIFICATIONS: 'false' }
-  execFileSync(python, ['-c', `
+  const env = {
+    ...process.env,
+    DATA_DIR: data,
+    LLM_API_KEY: '',
+    EMBEDDING_API_KEY: '',
+    REDIS_URL: '',
+    DESKTOP_NOTIFICATIONS: 'false',
+  }
+  execFileSync(
+    python,
+    [
+      '-c',
+      `
 from datetime import datetime, timedelta
 from app.db import init_db, SessionLocal
 from app.models import Conversation
@@ -57,15 +96,25 @@ with SessionLocal() as db:
             pinned_at=datetime.utcnow() + timedelta(seconds=i) if i < 3 else None,
             pin_position=2-i if i < 3 else None))
     db.commit()
-`], { cwd: path.join(root, 'backend'), env, windowsHide: true })
+`,
+    ],
+    { cwd: path.join(root, 'backend'), env, windowsHide: true }
+  )
   const browser = await chromium.launch({ headless: true })
   let server = await launch(env)
   const errors = []
   let releaseOrder
   const request = async (url, body, method = 'PUT') => {
-    const response = await fetch(`${server.base}${url}`, body === undefined ? undefined : {
-      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    })
+    const response = await fetch(
+      `${server.base}${url}`,
+      body === undefined
+        ? undefined
+        : {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          }
+    )
     assert.equal(response.status, 200, `${url}: ${await response.clone().text()}`)
     return response.json()
   }
@@ -77,10 +126,14 @@ with SessionLocal() as db:
   }
   const row = (page, id) => page.locator(`.recent-conversation-row[data-conversation-id="${id}"]`)
   const handle = (page, id) => page.locator(`[data-pin-handle-id="${id}"]`)
-  const order = (page) => page.locator('[data-pin-handle-id]').evaluateAll((nodes) => nodes.map((node) => node.dataset.pinHandleId))
-  const expectOrder = async (page, ids) => waitFor(async () => JSON.stringify(await order(page)) === JSON.stringify(ids), `order ${ids}`)
+  const order = (page) =>
+    page
+      .locator('[data-pin-handle-id]')
+      .evaluateAll((nodes) => nodes.map((node) => node.dataset.pinHandleId))
+  const expectOrder = async (page, ids) =>
+    waitFor(async () => JSON.stringify(await order(page)) === JSON.stringify(ids), `order ${ids}`)
   const moveWithKey = async (page, id, key) => {
-    await waitFor(async () => !await handle(page, id).isDisabled(), 'ordering controls ready')
+    await waitFor(async () => !(await handle(page, id).isDisabled()), 'ordering controls ready')
     await handle(page, id).press(key)
   }
   try {
@@ -99,34 +152,53 @@ with SessionLocal() as db:
     await moveWithKey(page, 'c_a', 'Alt+ArrowUp')
     await expectOrder(page, ['c_c', 'c_a', 'c_b'])
     await expectOrder(other, ['c_c', 'c_a', 'c_b'])
-    await waitFor(async () => await handle(page, 'c_a').evaluate((button) => button === document.activeElement), 'keyboard focus restored after move')
+    await waitFor(
+      async () => await handle(page, 'c_a').evaluate((button) => button === document.activeElement),
+      'keyboard focus restored after move'
+    )
     await handle(page, 'c_a').click()
     const menu = page.getByRole('menu', { name: '固定会话顺序' })
     await menu.waitFor()
     await menu.getByRole('menuitem', { name: '移到首位', exact: true }).press('End')
-    assert.equal(await menu.getByRole('menuitem', { name: '移到末位', exact: true }).evaluate((button) => button === document.activeElement), true)
-    await page.screenshot({ path: path.join(root, 'verification/pin-order-desktop.png'), fullPage: true })
+    assert.equal(
+      await menu
+        .getByRole('menuitem', { name: '移到末位', exact: true })
+        .evaluate((button) => button === document.activeElement),
+      true
+    )
+    await page.screenshot({
+      path: path.join(root, 'verification/pin-order-desktop.png'),
+      fullPage: true,
+    })
     await menu.getByRole('menuitem', { name: '移到末位', exact: true }).press('Enter')
     await expectOrder(page, ['c_c', 'c_b', 'c_a'])
-    await waitFor(async () => !await handle(page, 'c_a').isDisabled(), 'drag controls ready')
+    await waitFor(async () => !(await handle(page, 'c_a').isDisabled()), 'drag controls ready')
     await handle(page, 'c_a').dragTo(row(page, 'c_c'), { targetPosition: { x: 70, y: 2 } })
     await expectOrder(page, ['c_a', 'c_c', 'c_b'])
     await expectOrder(other, ['c_a', 'c_c', 'c_b'])
-    await waitFor(async () => !await handle(other, 'c_b').isDisabled(), 'second window drag controls ready')
+    await waitFor(
+      async () => !(await handle(other, 'c_b').isDisabled()),
+      'second window drag controls ready'
+    )
     await handle(other, 'c_b').dragTo(row(other, 'c_a'), { targetPosition: { x: 70, y: 28 } })
     await expectOrder(page, ['c_a', 'c_b', 'c_c'])
 
-    let mode = 'fail', orderRequests = 0
+    let mode = 'fail',
+      orderRequests = 0
     await page.route('**/api/conversations/pins/order', async (route) => {
       orderRequests++
-      if (mode === 'fail') return route.fulfill({ status: 503, json: { detail: 'Injected save failure' } })
+      if (mode === 'fail')
+        return route.fulfill({ status: 503, json: { detail: 'Injected save failure' } })
       if (mode === 'lost') {
         mode = 'normal'
         const committed = await route.fetch()
         assert.equal(committed.status(), 200)
         return route.abort('failed')
       }
-      if (mode === 'hold') await new Promise((resolve) => { releaseOrder = resolve })
+      if (mode === 'hold')
+        await new Promise((resolve) => {
+          releaseOrder = resolve
+        })
       await route.continue()
     })
     await moveWithKey(page, 'c_c', 'Alt+ArrowUp')
@@ -141,7 +213,10 @@ with SessionLocal() as db:
     await page.getByRole('button', { name: '重试排序', exact: true }).waitFor()
     await expectOrder(other, ['c_b', 'c_a', 'c_c'])
     await page.getByRole('button', { name: '重试排序', exact: true }).click()
-    await waitFor(async () => await page.getByRole('button', { name: '重试排序', exact: true }).count() === 0, 'lost response idempotent retry')
+    await waitFor(
+      async () => (await page.getByRole('button', { name: '重试排序', exact: true }).count()) === 0,
+      'lost response idempotent retry'
+    )
 
     // A request based on an old order must not overwrite the other window.
     mode = 'hold'
@@ -149,10 +224,18 @@ with SessionLocal() as db:
     await moveWithKey(page, 'c_c', 'Alt+ArrowUp')
     await waitFor(() => releaseOrder, 'held reorder request')
     assert.equal(await handle(page, 'c_b').isDisabled(), true)
-    assert.equal(await row(page, 'c_a').getByRole('button', { name: '取消固定 Research A', exact: true }).isDisabled(), true)
+    assert.equal(
+      await row(page, 'c_a')
+        .getByRole('button', { name: '取消固定 Research A', exact: true })
+        .isDisabled(),
+      true
+    )
     await handle(page, 'c_b').evaluate((button) => button.click())
     assert.equal(orderRequests, before + 1, 'one pending reorder request')
-    await request('/api/conversations/pins/order', { conversation_ids: ['c_c', 'c_b', 'c_a'], expected_order: ['c_b', 'c_a', 'c_c'] })
+    await request('/api/conversations/pins/order', {
+      conversation_ids: ['c_c', 'c_b', 'c_a'],
+      expected_order: ['c_b', 'c_a', 'c_c'],
+    })
     await expectOrder(other, ['c_c', 'c_b', 'c_a'])
     releaseOrder()
     releaseOrder = undefined
@@ -174,12 +257,22 @@ with SessionLocal() as db:
     await handle(other, 'c_a').click()
     const smallMenu = other.getByRole('menu', { name: '固定会话顺序' })
     await smallMenu.waitFor()
-    assert.equal(await smallMenu.getByRole('menuitem', { name: '下移', exact: true }).isDisabled(), true)
-    await other.screenshot({ path: path.join(root, 'verification/pin-order-small-desktop.png'), fullPage: true })
+    assert.equal(
+      await smallMenu.getByRole('menuitem', { name: '下移', exact: true }).isDisabled(),
+      true
+    )
+    await other.screenshot({
+      path: path.join(root, 'verification/pin-order-small-desktop.png'),
+      fullPage: true,
+    })
     await smallMenu.getByRole('menuitem', { name: '上移', exact: true }).press('Escape')
     assert.equal(await smallMenu.count(), 0)
-    assert.equal(await handle(other, 'c_a').evaluate((button) => button === document.activeElement), true)
-    for (const current of [page, other]) assert.ok(await current.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    assert.equal(
+      await handle(other, 'c_a').evaluate((button) => button === document.activeElement),
+      true
+    )
+    for (const current of [page, other])
+      assert.ok(await current.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
 
     await page.context().close()
     await other.context().close()
@@ -197,13 +290,21 @@ with SessionLocal() as db:
     const rows = (await request('/api/conversations')).conversations
     assert.equal(rows.find((item) => item.id === 'c_a').pin_position, 0)
     assert.equal(rows.find((item) => item.id === 'c_b').pin_position, 1)
-    assert.equal(rows.some((item) => item.id === 'c_c'), false)
+    assert.equal(
+      rows.some((item) => item.id === 'c_c'),
+      false
+    )
     assert.deepEqual(errors, [])
-    console.log('PASS: real drag/drop before/after, keyboard and menu ordering/focus/boundaries, pin/unpin, SQLite/SSE two-window sync, save failure/retry, lost response idempotency, duplicate guard, concurrent reorder/delete conflict, cold restart/new origin, refresh persistence, desktop bounds')
+    console.log(
+      'PASS: real drag/drop before/after, keyboard and menu ordering/focus/boundaries, pin/unpin, SQLite/SSE two-window sync, save failure/retry, lost response idempotency, duplicate guard, concurrent reorder/delete conflict, cold restart/new origin, refresh persistence, desktop bounds'
+    )
   } finally {
     releaseOrder?.()
     await browser.close()
     await stop(server)
   }
 }
-main().catch((error) => { console.error(error); process.exitCode = 1 })
+main().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

@@ -22,6 +22,7 @@ from . import git_operations, git_process, project_git as git, workspace, worksp
 from .config import DATA_DIR
 from .db import SessionLocal
 from .models import ManagedWorktree, Project, Conversation, TaskRecord
+from .timeutil import utcnow
 
 _guard = threading.RLock()
 _active = threading.Event()
@@ -64,7 +65,7 @@ def summary(row):
 def _save(db, row, status=None):
     if status:
         row.status = status
-    row.revision += 1; row.updated_at = datetime.utcnow()
+    row.revision += 1; row.updated_at = utcnow()
     _mark(row); db.commit()
 
 

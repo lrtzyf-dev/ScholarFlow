@@ -36,25 +36,36 @@ async function main() {
     }
     await nextSnapshot()
     const start = await fetch(`${baseURL}/api/tasks/start`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: 'Offline task lifecycle verification', title: '[Verification] Offline SSE lifecycle' }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: 'Offline task lifecycle verification',
+        title: '[Verification] Offline SSE lifecycle',
+      }),
     })
     assert.equal(start.status, 200)
     const task = await start.json()
     let finished
     while (!finished) {
       const snapshot = await nextSnapshot()
-      finished = snapshot.find((item) => item.id === task.id && ['done', 'failed', 'cancelled'].includes(item.status))
+      finished = snapshot.find(
+        (item) => item.id === task.id && ['done', 'failed', 'cancelled'].includes(item.status)
+      )
     }
     assert.equal(finished.status, 'done')
     assert.equal(finished.progress, 1)
     assert.ok(finished.result.answer)
     assert.ok(snapshots.length >= 2)
-    console.log(`PASS: live HTTP SSE received ${snapshots.length} snapshots and completed an offline background task`)
+    console.log(
+      `PASS: live HTTP SSE received ${snapshots.length} snapshots and completed an offline background task`
+    )
   } finally {
     clearTimeout(deadline)
     controller.abort()
     await reader?.cancel().catch(() => {})
   }
 }
-main().catch((error) => { console.error(error); process.exitCode = 1 })
+main().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

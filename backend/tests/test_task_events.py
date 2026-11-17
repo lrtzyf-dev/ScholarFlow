@@ -3,6 +3,7 @@ import asyncio
 import json
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import approval_store, task_events, task_runner
@@ -101,17 +102,36 @@ def test_background_runner_publishes_committed_progress_and_preserves_events(db,
     assert len(snapshots) == 8  # running, five meaningful events, done, thread cleanup
 
 
-def test_background_error_event_cannot_finish_as_success(db, monkeypatch):
+@pytest.mark.parametrize("committed_checkpoint", [False, True])
+def test_background_error_event_cannot_finish_as_success(db, monkeypatch, committed_checkpoint):
     task = TaskRecord(type="agent", title="Failed test", status="pending", events=[])
     db.add(task)
     db.commit()
-    monkeypatch.setattr(task_runner, "run_agent", lambda *a, **kw: iter([
-        ("error", {"text": "Provider unavailable"}),
-        ("answer", {"answer": "Please retry", "evidence": []}),
-    ]))
+    def agent(session, *args, **kwargs):
+        yield "error", {"text": "Provider unavailable"}
+        result = {"answer": "Please retry", "evidence": [], "completed": True, "qa_id": "synthetic-fallback"}
+        if committed_checkpoint:
+            session.get(TaskRecord, task.id).checkpoint = {"phase": "completed", "result": result}
+            session.commit()
+        yield "answer", result
+    monkeypatch.setattr(task_runner, "run_agent", agent)
     monkeypatch.setattr(task_runner.notifier, "notify", lambda *a, **kw: None)
     task_runner._run_in_background(task.id, "question", None, [], "failed_conversation")
     db.refresh(task)
     assert task.status == "failed"
     assert task.error == "Provider unavailable"
     assert task.result["answer"] == "Please retry"
+
+
+def test_claimed_tool_recovery_without_a_durable_failure_receipt_stays_failed(db, monkeypatch):
+    task = TaskRecord(type="agent", title="Unproven recovery", status="pending", events=[])
+    db.add(task)
+    db.commit()
+    monkeypatch.setattr(task_runner, "run_agent", lambda *a, **kw: iter([
+        ("error", {"text": "Unverified tool failure", "source": "tool", "failure_id": "failure/tool/0/0"}),
+        ("answer", {"answer": "It worked", "completed": True, "qa_id": "unproven"}),
+    ]))
+    monkeypatch.setattr(task_runner.notifier, "notify", lambda *a, **kw: None)
+    task_runner._run_in_background(task.id, "question", None, [], "unproven_conversation")
+    db.refresh(task)
+    assert task.status == "failed" and task.error == "Unverified tool failure"
