@@ -1864,7 +1864,7 @@ async function onInitAgents(overwrite: boolean) {
           <div class="card">
             <div class="card-title">开源与许可</div>
             <p class="para">
-              研序由张祎凡独立开发，项目原创代码著作权归作者所有，并按根目录 MIT License 授权。
+              研序由张祎凡独立开发，项目原创代码著作权归作者所有。本项目为源码可见软件，使用及二次创作须事先取得作者书面同意（lrtzyf@gmail.com）。
             </p>
             <p class="para">
               本项目使用组件的许可范围见根目录 <code>LICENSES.md</code>。

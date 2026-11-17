@@ -3,7 +3,7 @@ message: "If you use ScholarFlow in your research, please cite the repository re
 title: "ScholarFlow"
 version: "0.1.0"
 date-released: "2026-11-17"
-license: "MIT"
+license: "Other — source-available; prior written permission required (see LICENSE)"
 authors:
   - family-names: "Zhang"
     given-names: "Yifan"

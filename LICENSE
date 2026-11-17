@@ -1,21 +1,123 @@
-MIT License
+研序 ScholarFlow 源码授权许可协议
+Copyright (c) 2026 张祎凡（Zhang Yifan）
 
-Copyright (c) 2026 Zhang Yifan (张祎凡)
+保留所有权利（All Rights Reserved）。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+一、协议性质
+
+本协议是本软件及其相关源代码、文档、配置与随附资源（以下统称“本作品”）的唯一授权依据，
+取代本仓库此前出现的任何 MIT License 或其他许可声明。
+
+本作品不属于开放源代码软件，而属于“源码可见”（source-available）软件。源码公开的目的
+仅限于阅读、评估、学习与审阅，本身不构成对使用、改编或分发的授权。
+
+
+二、须事先取得版权所有者书面同意的行为
+
+在实施下列任一行为之前，任何个人或组织必须事先联系版权所有者，并取得明确的书面同意
+（书面形式包括电子邮件）：
+
+1. 使用：运行、部署、安装、集成、调用本作品的任何部分，或将本作品接入其他系统与服务；
+
+2. 二次创作：对本作品进行修改、改编、翻译、演绎、重构、拆分、合并、再封装，
+   或基于本作品全部或部分内容创作衍生作品；
+
+3. 分发：复制、公开、转载、再分发本作品或其衍生作品，或将其上传至任何代码托管、
+   软件分发或内容发布平台；
+
+4. 商业利用：销售、转售、出租、以本作品或其衍生作品提供有偿或无偿的对外服务；
+
+5. 再许可：将上述任何权利转授、转让给第三方。
+
+
+三、如何取得授权
+
+请通过电子邮件提交申请，并说明：
+
+  · 申请人姓名或组织名称及联系方式；
+  · 拟使用的具体范围（模块、文件或功能）；
+  · 使用方式与使用场景；
+  · 是否为商业用途；
+  · 拟授权的期限。
+
+授权申请邮箱：lrtzyf@gmail.com
+
+版权所有者将逐案答复。授权的范围、条件与期限，以书面答复中明确写出的内容为准。
+未收到书面同意，即视为未获授权。
+
+
+四、获得授权后的义务
+
+1. 严格在授权答复所载明的范围、条件与期限内使用；
+
+2. 在所有副本、衍生作品及相关文档中保留本协议全文与版权声明；
+
+3. 不得超出授权范围再许可或转授第三方；
+
+4. 授权仅对答复中列明的申请人有效，不自动延伸至其关联方或其他主体。
+
+
+五、权利的保留
+
+版权所有者保留本协议未明确授予的一切权利。未行使或延迟行使本协议项下的任何权利，
+不构成对该权利的放弃。
+
+
+六、授权的终止
+
+出现下列情形之一时，依本协议取得的授权自动终止，无需另行通知：
+
+1. 违反本协议任何条款；
+
+2. 超出授权答复载明的范围、条件或期限使用。
+
+授权终止后，使用者应立即停止一切使用行为，并删除、销毁其持有或控制的全部副本及衍生作品。
+
+
+七、免责声明
+
+本作品按“现状”提供，不附带任何形式的明示或默示保证，包括但不限于对适销性、特定用途
+适用性、准确性、完整性及不侵权的保证。
+
+在任何情况下，版权所有者均不对因本作品或其使用、无法使用、或与本作品相关的其他行为
+而产生的任何直接、间接、偶然、特殊、惩戒性或后果性损害承担责任，无论其基于合同、
+侵权或其他法理，即使已被告知发生此类损害的可能性。
+
+使用者应自行核对本作品所引用的外部资料来源与模型服务商条款。
+
+
+八、协议更新
+
+版权所有者可不时修订本协议。修订自本文件在仓库中更新之日起生效。修订不影响修订前
+已依书面答复取得的授权。
+
+
+九、适用法律
+
+本协议适用中华人民共和国法律。因本协议产生的争议，双方应先行协商解决。
+
+
+--------------------------------------------------------------------
+
+English Summary (for reference only; the Chinese text above prevails)
+
+This software is source-available, NOT open source. All rights are reserved.
+
+Prior written permission from the copyright holder is REQUIRED before any of the
+following: (1) using, running, deploying or integrating the software in any form;
+(2) creating derivative works, including modification, adaptation, translation,
+refactoring, or merging with other works; (3) redistributing or publishing the
+software or its derivatives; (4) any commercial use, including resale or providing
+paid or unpaid services based on it; (5) sublicensing any of the above.
+
+To request permission, email lrtzyf@gmail.com with your identity, the intended
+scope, the manner of use, whether it is commercial, and the requested term.
+Permission is granted case by case, and only to the extent stated in the written
+reply. No reply means no permission.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE.
+
+Copyright (c) 2026 Zhang Yifan (张祎凡). All rights reserved.

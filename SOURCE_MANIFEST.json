@@ -2,7 +2,7 @@
   "format": "scholarflow-github-source",
   "version": "0.1.0",
   "build_number": 3,
-  "license": "MIT",
+  "license": "source-available (see LICENSE; permission required)",
   "file_count_excluding_manifest": 1074,
   "files": [
     {

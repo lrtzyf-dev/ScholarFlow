@@ -20,7 +20,7 @@
 
 未配置云模型凭据时，应用保持“模型待配置”；这不会自动切换为真实大模型或离线 Mock。可以在设置页主动开启离线演示模式，或在本地环境文件中将 `LLM_DEMO_MODE=true`。离线演示根据检索到的原文生成摘录式输出，不等同于真实模型回答。
 
-Python 项目代码按 MIT License 授权；第三方库、字体及附带工具保留各自许可证，见 [`LICENSES.md`](LICENSES.md)。源码发布不代表所有未来回答都正确。使用者应核对来源原文。模型服务商的 API 请求依其服务条款处理。
+本项目的使用、二次创作与分发均须事先取得作者书面同意（申请邮箱 lrtzyf@gmail.com），详见 [`LICENSE`](LICENSE)；第三方库、字体及附带工具保留各自许可证，见 [`LICENSES.md`](LICENSES.md)。源码发布不代表所有未来回答都正确。使用者应核对来源原文。模型服务商的 API 请求依其服务条款处理。
 
 桌面应用把文献和会话数据保存在本机。开发模式默认数据目录为 `backend/data`；已安装 Windows 版本使用当前 Windows 用户的数据目录。Windows API 密钥保护绑定当前用户。项目终端与文件访问使用当前操作系统用户权限，不提供 OS 级进程沙箱。
 
@@ -90,12 +90,16 @@ python -m pytest backend/tests -q
 
 ## 许可证
 
-本项目源代码按 [MIT License](LICENSE) 授权。第三方组件与字体继续遵循各自的许可证。具体说明及尚待澄清的第三方依赖事项见 [`LICENSES.md`](LICENSES.md)。
+本项目为**源码可见（source-available）**软件，**不是**开放源代码软件。使用、二次创作、分发或商业利用本项目的任何部分，**均须事先取得作者本人的书面同意**。
+
+授权申请邮箱：**lrtzyf@gmail.com**
+
+完整条款见 [`LICENSE`](LICENSE)。第三方组件与字体继续遵循各自的许可证，具体说明及尚待澄清的第三方依赖事项见 [`LICENSES.md`](LICENSES.md)。
 
 ## English
 
 ScholarFlow is a local research workspace for organizing papers, searching source passages, and answering literature questions with clickable citations. The primary interface is Simplified Chinese.
 
-The repository contains source code, not a prebuilt installer or user data. It is primarily developed for Windows x64. The Python project source is licensed under MIT; third-party libraries, fonts, and bundled tools keep their own licenses. Cloud-model credentials are optional and must be configured explicitly. Offline demo mode is opt-in and does not represent a real LLM response.
+The repository contains source code, not a prebuilt installer or user data. It is primarily developed for Windows x64. The project is source-available, not open source: prior written permission from the author is required before use, derivative work, redistribution, or commercial use — contact lrtzyf@gmail.com. Third-party libraries, fonts, and bundled tools keep their own licenses. Cloud-model credentials are optional and must be configured explicitly. Offline demo mode is opt-in and does not represent a real LLM response.
 
 See the sections above for setup and test commands. Review [`LICENSES.md`](LICENSES.md) before redistributing a desktop build.

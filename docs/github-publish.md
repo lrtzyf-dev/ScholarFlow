@@ -1,6 +1,6 @@
 # 上传到 GitHub
 
-这个压缩包已包含 README、MIT 许可证、忽略规则和 GitHub Actions 基础检查。将 ZIP 解压到一个新目录，然后把该目录作为仓库根目录推送。
+这个压缩包已包含 README、授权协议（LICENSE）、忽略规则和 GitHub Actions 基础检查。将 ZIP 解压到一个新目录，然后把该目录作为仓库根目录推送。
 
 ## 用 Git 推送
 

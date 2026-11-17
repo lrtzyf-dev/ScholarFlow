@@ -45,7 +45,7 @@ const router = useRouter()
       <summary>许可证与开源软件声明</summary>
       <div class="card">
         <div class="sec-title"><ShieldCheck :size="15" /> 许可证</div>
-        <p class="line">研序由张祎凡独立开发，项目原创代码采用 MIT License，著作权归作者所有。</p>
+        <p class="line">研序由张祎凡独立开发，项目原创代码著作权归作者所有。本项目为源码可见软件，使用及二次创作须事先取得作者书面同意。</p>
         <p class="line">授权范围与条件见根目录 <code>LICENSE</code> 文件。</p>
       </div>
 
